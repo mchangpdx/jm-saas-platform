@@ -8,7 +8,8 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import { env } from '../config/env.js';
 import { getPaymentAdapter } from '../adapters/payment/factory.js';
-import { ORDER_QUEUE_NAME } from './producer.js';
+import { getPosAdapter }     from '../adapters/pos/factory.js';
+import { ORDER_QUEUE_NAME }  from './producer.js';
 
 // Separate IORedis connection options — Worker uses blocking XREAD commands that must not
 // share a connection with the Queue producer (워커는 블로킹 XREAD를 사용하므로 프로듀서와 연결 분리 필수)
@@ -76,36 +77,33 @@ async function processOrderJob(job) {
 // ── Stage Handlers ────────────────────────────────────────────────────────────
 
 /**
- * Stage 2 — Send the order to the POS system.
- * POS adapters will be implemented in Step 5. This stub mirrors the real interface.
- * (스테이지 2 — POS 시스템에 주문 전송. POS 어댑터는 Step 5에서 구현. 실제 인터페이스를 모방한 스텁)
+ * Stage 2 — Resolve the tenant's POS adapter and submit the order.
+ * The factory selects the correct adapter (Loyverse, Quantic, …) from storeContext.posType.
+ * (스테이지 2 — 테넌트 POS 어댑터 해석 후 주문 전송. 팩토리가 storeContext.posType으로 올바른 어댑터 선택)
  *
  * @param {object} orderData
  * @param {object} storeContext
  * @param {import('bullmq').Job} job
- * @returns {Promise<object>} posResult
+ * @returns {Promise<import('../adapters/pos/interface.js').PosOrderResult>}
  */
 async function processPosStage(orderData, storeContext, job) {
   console.log(
-    `[Worker] [${job.id}] Stage 2 — sending to POS adapter: ${storeContext.posType} ` +
-    `(스테이지 2 — POS 어댑터 전송: ${storeContext.posType})`
+    `[Worker] [${job.id}] Stage 2 — resolving POS adapter for type: ${storeContext.posType} ` +
+    `(스테이지 2 — POS 어댑터 해석: ${storeContext.posType})`
   );
 
-  // TODO: replace stub with real POS adapter call in Step 5
-  // (TODO: Step 5에서 실제 POS 어댑터 호출로 교체)
-  //   import { getPosAdapter } from '../adapters/pos/factory.js';
-  //   const posAdapter = getPosAdapter(storeContext.posType);
-  //   return posAdapter.submitOrder(orderData, storeContext);
+  // Resolve the correct POS adapter from the factory using the tenant's store context
+  // (팩토리에서 테넌트 스토어 컨텍스트를 사용하여 올바른 POS 어댑터 해석)
+  const posAdapter = getPosAdapter(storeContext);
 
-  // Stub: simulate POS network round-trip (스텁: POS 네트워크 왕복 시뮬레이션)
-  await new Promise((r) => setTimeout(r, 200));
+  console.log(
+    `[Worker] [${job.id}] Using POS adapter: ${posAdapter.adapterName} ` +
+    `(사용 POS 어댑터: ${posAdapter.adapterName})`
+  );
 
-  return {
-    posOrderId:  `POS-${storeContext.posType?.toUpperCase()}-${orderData.orderId}`,
-    status:      'submitted',
-    posType:     storeContext.posType ?? 'unknown',
-    submittedAt: new Date().toISOString(),
-  };
+  // Delegate order creation to the adapter — it handles all POS-specific protocol details
+  // (어댑터에 주문 생성 위임 — POS별 프로토콜 세부 사항을 어댑터가 처리)
+  return posAdapter.createOrder(orderData, storeContext);
 }
 
 /**
