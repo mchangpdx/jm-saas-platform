@@ -10,7 +10,8 @@ import { supabase } from '../config/supabase.js';
  * {
  *   agentId:     string   — unique tenant identifier (테넌트 고유 ID)
  *   storeName:   string   — human-readable store name (매장명)
- *   posType:     string   — POS adapter key, e.g. 'toast' | 'square' (POS 어댑터 키)
+ *   posType:     string   — POS system key, e.g. 'LOYVERSE' | 'QUANTIC' (POS 시스템 키)
+ *   posApiKey:   string   — API key/token for the POS system (POS 시스템 API 키/토큰)
  *   paymentType: string   — payment adapter key, e.g. 'stripe' | 'toss' (결제 어댑터 키)
  *   timezone:    string   — store timezone (매장 타임존)
  *   active:      boolean  — whether the agent subscription is active (구독 활성 여부)
@@ -74,7 +75,7 @@ async function resolveStoreContext(agentId) {
   // ── PRODUCTION PATH ── query Supabase agents table (운영 경로 — Supabase agents 테이블 실조회)
   const { data, error } = await supabase
     .from('agents')
-    .select('id, store_name, pos_type, payment_type, timezone, active')
+    .select('id, store_name, pos_type, pos_api_key, payment_type, timezone, active')
     .eq('id', agentId)
     .single();
 
@@ -89,6 +90,7 @@ async function resolveStoreContext(agentId) {
     agentId:     data.id,
     storeName:   data.store_name,
     posType:     data.pos_type,
+    posApiKey:   data.pos_api_key,   // POS API key passed to the POS adapter factory (POS 어댑터 팩토리에 전달될 POS API 키)
     paymentType: data.payment_type,
     timezone:    data.timezone ?? 'America/Los_Angeles',
     active:      data.active,
@@ -108,7 +110,8 @@ function getMockStoreContext(agentId) {
     'agent-001': {
       agentId:     'agent-001',
       storeName:   'JM Korean BBQ — Downtown',
-      posType:     'toast',
+      posType:     'LOYVERSE',
+      posApiKey:   'mock-loyverse-key-001',  // Mock key for local dev (로컬 개발용 목 키)
       paymentType: 'stripe',
       timezone:    'America/Los_Angeles',
       active:      true,
@@ -116,7 +119,8 @@ function getMockStoreContext(agentId) {
     'agent-002': {
       agentId:     'agent-002',
       storeName:   'JM Boba Tea — Koreatown',
-      posType:     'square',
+      posType:     'QUANTIC',
+      posApiKey:   'mock-quantic-key-002',   // Mock key for local dev (로컬 개발용 목 키)
       paymentType: 'toss',
       timezone:    'America/Los_Angeles',
       active:      true,
