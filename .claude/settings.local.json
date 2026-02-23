@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/mchangpdx/jm-saas-platform log --oneline 2>&1 | head -522111)",
+      "Bash(git -C /Users/mchangpdx/jm-saas-platform status --short 2>&1)",
+      "Bash(git -C /Users/mchangpdx/jm-saas-platform show --name-only HEAD 2>&1 | head -40)"
+    ]
+  }
+}
