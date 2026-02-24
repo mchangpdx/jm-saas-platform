@@ -20,7 +20,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Model identifier — pinned to Flash for voice latency + cost balance (음성 지연/비용 균형을 위해 Flash 모델 고정)
-const GEMINI_MODEL = 'gemini-1.5-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 // Singleton API client — constructed once at module load time (모듈 로드 시 한 번 생성되는 싱글톤 클라이언트)
 const _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
