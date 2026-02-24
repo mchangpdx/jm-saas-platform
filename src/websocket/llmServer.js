@@ -464,7 +464,8 @@ function sendResponse(ws, responseId, content, endCall = false) {
 
   ws.send(
     JSON.stringify({
-      response_id:      responseId,   // Must match the request's response_id for Retell audio sequencing (Retell 오디오 순서 지정을 위해 요청의 response_id와 일치해야 함)
+      response_type:    'response',   // Required by Retell — frames without this field are silently ignored (Retell 필수 — 이 필드 없이는 프레임이 무시됨)
+      response_id:      responseId,   // Echoed from the request — Retell uses this to sequence audio (요청에서 반환 — Retell이 오디오 순서 지정에 사용)
       content,
       content_complete: true,         // Signals the complete utterance — no streaming chunks (완전한 발화 신호 — 스트리밍 청크 없음)
       end_call:         endCall,
