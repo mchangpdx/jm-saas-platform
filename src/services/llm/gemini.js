@@ -336,3 +336,32 @@ export class LlmError extends Error {
 
 // Singleton export — one LlmService instance per process (프로세스당 하나의 LlmService 인스턴스)
 export const llmService = new LlmService();
+
+// ── Stateful Chat Session Factory ─────────────────────────────────────────────
+
+/**
+ * Create a persistent Gemini chat session for a long-lived WebSocket connection.
+ *
+ * Difference from generateResponse() — which is stateless (caller passes full history each
+ * time) — this returns a live ChatSession whose context Gemini accumulates internally.
+ * Call chat.sendMessage() for each turn; the model remembers all prior turns automatically.
+ *
+ * (장기 WebSocket 연결을 위한 영구적인 Gemini 채팅 세션 생성.
+ *  무상태인 generateResponse()와 달리, 반환된 ChatSession은 Gemini가 내부적으로
+ *  컨텍스트를 누적. 매 턴마다 chat.sendMessage()를 호출하면 모델이 이전 턴을 자동으로 기억)
+ *
+ * @param {string} systemPrompt — Master prompt assembled from storeData for this connection
+ *                                (이 연결의 storeData로 조립된 마스터 프롬프트)
+ * @returns {import('@google/generative-ai').ChatSession}
+ */
+export function createChatSession(systemPrompt) {
+  const model = _client.getGenerativeModel({
+    model:             GEMINI_MODEL,
+    tools:             POS_TOOLS,
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+  });
+
+  // Empty history on start — Gemini accumulates turns internally as sendMessage() is called
+  // (빈 히스토리로 시작 — sendMessage() 호출 시 Gemini가 내부적으로 턴 누적)
+  return model.startChat({ history: [] });
+}

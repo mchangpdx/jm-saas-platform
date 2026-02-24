@@ -1,8 +1,9 @@
 // Entry point — bootstrap Express app and mount all middleware/routes (진입점 — Express 앱 초기화 및 미들웨어/라우트 마운트)
 import './config/env.js'; // Validate env vars before anything else (다른 모듈보다 먼저 환경 변수 검증)
 import express from 'express';
-import { env } from './config/env.js';
-import { v1Router } from './routes/v1/index.js';
+import { env }            from './config/env.js';
+import { v1Router }       from './routes/v1/index.js';
+import { setupWebSocket } from './websocket/llmServer.js';
 
 const app = express();
 
@@ -57,9 +58,17 @@ app.use((err, _req, res, _next) => {
 
 // ── Server Start ──────────────────────────────────────────────────────────────
 
-app.listen(env.port, () => {
+// app.listen() returns the underlying http.Server — capture it so we can attach the WebSocket server.
+// Both HTTP (Express) and WS traffic share the same port; the ws library discriminates via the
+// HTTP Upgrade header on the initial handshake request.
+// (app.listen()은 기본 http.Server를 반환 — WebSocket 서버 부착을 위해 캡처.
+//  HTTP(Express)와 WS 트래픽이 동일 포트 공유 — ws 라이브러리가 초기 핸드셰이크의 HTTP Upgrade 헤더로 구별)
+const httpServer = app.listen(env.port, () => {
   console.log(`[Server] JM SaaS Platform running on port ${env.port} (서버 시작: 포트 ${env.port})`);
   console.log(`[Server] Environment: ${env.nodeEnv} (환경: ${env.nodeEnv})`);
 });
+
+// Attach WebSocket server to the same HTTP server instance (동일 HTTP 서버 인스턴스에 WebSocket 서버 부착)
+setupWebSocket(httpServer);
 
 export default app;
