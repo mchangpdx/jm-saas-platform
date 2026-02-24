@@ -211,14 +211,19 @@ export function setupWebSocket(httpServer) {
         return;
       }
 
-      // update_only — barge-in: user interrupted, abort the active stream immediately.
-      // No new generation needed — Retell will send response_required when ready.
-      // (update_only — 끼어들기: 사용자 끊음, 활성 스트림 즉시 중단.
-      //  새 생성 불필요 — Retell이 준비되면 response_required 전송)
+      // update_only — transcript state push from Retell.
+      // Retell sends these continuously as the user's speech is transcribed.
+      // Most are routine updates and must NOT abort the active generation.
+      // Only abort when turntaking === 'user_turn': that is the explicit signal that
+      // the user has started speaking mid-response — a genuine barge-in.
+      // (update_only — Retell의 transcript 상태 업데이트.
+      //  사용자 발화 중 지속적으로 수신됨 — 대부분은 일반 업데이트.
+      //  turntaking === 'user_turn'일 때만 진짜 끼어들기로 처리하여 중단)
       if (msg.interaction_type === 'update_only') {
-        if (session.isGenerating && session.abortController) {
+        if (session.isGenerating && session.abortController && msg.turntaking === 'user_turn') {
           console.log(
-            `[WS] [${agentId}] Barge-in — aborting active generation (끼어들기 — 활성 생성 중단)`
+            `[WS] [${agentId}] Barge-in (user_turn) — aborting active generation ` +
+            `(끼어들기 감지 — 활성 생성 중단)`
           );
           session.abortController.abort();
         }
@@ -226,37 +231,30 @@ export function setupWebSocket(httpServer) {
       }
 
       // response_required — Retell needs a spoken reply.
-      // Abort any in-flight generation immediately, then enqueue the new turn.
+      // This is a START trigger — DO NOT abort any in-flight generation here.
+      // The generationQueue serialises calls: if the previous generation is still
+      // running, this one waits behind it then starts cleanly.
+      // Only a genuine barge-in (update_only + user_turn) should abort a generation.
       // (response_required — Retell이 발화 응답 요청.
-      //  진행 중인 생성 즉시 중단 후 새 턴 큐에 추가)
+      //  이것은 시작 트리거 — 진행 중인 생성을 중단하지 않음.
+      //  generationQueue가 직렬화: 이전 생성이 완료된 후 시작.
+      //  진짜 끼어들기(update_only + user_turn)만 생성을 중단해야 함)
       if (msg.interaction_type === 'response_required') {
         const responseId = msg.response_id;
         const transcript = msg.transcript ?? [];
 
-        // Abort the current generation IMMEDIATELY — before touching the queue.
-        // This races against generateWithAbort()'s abort listener and rejects
-        // the pending Gemini await, so the currently running handleTranscript
-        // reaches its finally block as soon as possible.
-        // (즉시 현재 생성 중단 — 큐에 접근하기 전.
-        //  generateWithAbort()의 abort 리스너와 경쟁하여 pending Gemini await 거절.
-        //  현재 실행 중인 handleTranscript가 가능한 빨리 finally 블록에 도달)
-        if (session.abortController) {
-          session.abortController.abort();
-        }
-
         // Create a fresh AbortController for this generation turn.
         // The reference is captured in the closure so the queue entry can verify
-        // it hasn't been superseded again before the actual Gemini call starts.
+        // it hasn't been superseded by a later response_required before it runs.
         // (이번 생성 턴을 위한 새 AbortController 생성.
-        //  참조는 클로저에서 캡처 — 큐 항목이 Gemini 호출 전에 추월 여부 확인)
+        //  참조는 클로저에서 캡처 — 큐 항목이 Gemini 호출 전에 더 새로운 response_required로
+        //  추월됐는지 확인하여 조용히 건너뜀)
         const controller = new AbortController();
         session.abortController = controller;
 
         _enqueueGeneration(ws, session, agentId, () => {
-          // Verify this generation wasn't superseded while waiting in the queue.
-          // If it was, controller !== session.abortController, so we skip silently.
-          // (큐 대기 중 추월 여부 확인.
-          //  추월된 경우 controller !== session.abortController이므로 조용히 건너뜀)
+          // Stale-generation check: skip if a newer response_required replaced our controller.
+          // (추월 확인: 더 새로운 response_required가 컨트롤러를 교체한 경우 건너뜀)
           if (session.abortController !== controller) return Promise.resolve();
           return handleTranscript(ws, session, transcript, responseId, controller.signal);
         });
