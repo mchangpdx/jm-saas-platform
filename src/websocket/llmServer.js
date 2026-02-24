@@ -161,20 +161,23 @@ export function setupWebSocket(httpServer) {
         return;
       }
 
-      // update_only is a transcript state push — Retell does not expect a reply, skip Gemini
-      // (update_only는 transcript 상태 푸시 — Retell이 응답을 기대하지 않으므로 Gemini 호출 생략)
-      const interactionType = msg.interaction_type ?? msg.event_type ?? '';
-      if (interactionType === 'update_only') return;
+      // update_only is a transcript state push — Retell does NOT expect a reply
+      // Sending a response here produces a missing/invalid response_id and breaks audio playback
+      // (update_only는 transcript 상태 푸시 — Retell이 응답을 기대하지 않음.
+      //  여기서 응답을 전송하면 response_id가 없거나 유효하지 않아 오디오 재생이 중단됨)
+      if (msg.interaction_type === 'update_only') return;
 
-      // response_required / reminder_required — Retell expects a spoken reply
-      // (response_required / reminder_required — Retell이 발화 응답을 기대함)
-      if (isResponseRequired(msg)) {
-        await handleTranscript(ws, session, msg.transcript ?? []);
+      // Strict gate: ONLY call Gemini and send audio when Retell explicitly asks for a response
+      // Any other interaction_type (ping, call_ended, etc.) is silently ignored
+      // (엄격한 게이트: Retell이 명시적으로 응답을 요청할 때만 Gemini 호출 및 오디오 전송.
+      //  그 외 interaction_type은 무시 — 예: ping, call_ended)
+      if (msg.interaction_type === 'response_required') {
+        // response_id must be echoed back in the reply frame — Retell uses it to sequence audio
+        // (response_id는 응답 프레임에 그대로 반환해야 함 — Retell이 오디오 순서 지정에 사용)
+        const responseId = msg.response_id;
+        await handleTranscript(ws, session, msg.transcript ?? [], responseId);
         return;
       }
-
-      // Silently ignore all other Retell event types (e.g. "ping", "call_ended")
-      // (그 외 Retell 이벤트 타입 무시 — 예: "ping", "call_ended")
     });
 
     // ── Close Handler ──────────────────────────────────────────────────────
@@ -201,47 +204,30 @@ export function setupWebSocket(httpServer) {
   return wss;
 }
 
-// ── Protocol Detection Helper ─────────────────────────────────────────────────
-
-/**
- * Returns true when the message is a transcript turn that requires a spoken reply.
- * update_only is handled separately (early-return before this check).
- * (응답이 필요한 transcript 턴인 경우 true 반환.
- *  update_only는 이 확인 전에 별도로 처리됨)
- *
- * @param {object} msg
- * @returns {boolean}
- */
-function isResponseRequired(msg) {
-  const t = msg.interaction_type ?? msg.event_type ?? '';
-  return (
-    t === 'response_required' ||  // Retell expects a reply (Retell이 응답 기대)
-    t === 'reminder_required'     // Retell nudges when the assistant has gone silent (어시스턴트가 무음일 때 Retell이 요청)
-  );
-}
-
 // ── Transcript Handler ────────────────────────────────────────────────────────
 
 /**
- * Handle a response_required / reminder_required turn from Retell.
+ * Handle a response_required turn from Retell.
  * Passes the latest user transcript to Gemini, handles function calls, and sends the reply.
- * (Retell의 response_required / reminder_required 턴 처리.
- *  최신 사용자 transcript를 Gemini에 전달, 함수 호출 처리, 응답 전송)
+ * The responseId from the incoming frame MUST be echoed back so Retell can sequence audio.
+ * (Retell의 response_required 턴 처리.
+ *  최신 사용자 transcript를 Gemini에 전달, 함수 호출 처리, 응답 전송.
+ *  수신 프레임의 responseId는 반드시 반환해야 함 — Retell이 오디오 순서 지정에 사용)
  *
  * @param {import('ws').WebSocket} ws
  * @param {object} session    — fully initialised session (초기화 완료된 세션)
  * @param {Array}  transcript — full call transcript array from Retell (Retell의 전체 통화 transcript 배열)
+ * @param {number} responseId — Retell's response_id; must be included in the reply frame (응답 프레임에 포함해야 하는 Retell의 response_id)
  */
-async function handleTranscript(ws, session, transcript) {
+async function handleTranscript(ws, session, transcript, responseId) {
   // Extract the last user utterance from the transcript array
   // (transcript 배열에서 마지막 사용자 발화 추출)
   const lastUserTurn = transcript.filter((t) => t.role === 'user').at(-1);
   const userText     = lastUserTurn?.content?.trim() ?? '';
 
   if (!userText) {
-    // Empty transcript — Retell sent a reminder; acknowledge with a nudge
-    // (빈 transcript — Retell이 리마인더 전송 — 짧은 안내로 응답)
-    sendResponse(ws, "I'm listening. How can I help you today?");
+    // Empty transcript — send a nudge to prompt the user (빈 transcript — 사용자에게 안내 전송)
+    sendResponse(ws, responseId, "I'm listening. How can I help you today?");
     return;
   }
 
@@ -263,7 +249,7 @@ async function handleTranscript(ws, session, transcript) {
         `[WS] [${session.agentId}] Gemini text reply: "${text.slice(0, 80)}…" ` +
         `(Gemini 텍스트 응답: "${text.slice(0, 80)}")`
       );
-      sendResponse(ws, text);
+      sendResponse(ws, responseId, text);
       return;
     }
 
@@ -297,7 +283,7 @@ async function handleTranscript(ws, session, transcript) {
       `(Gemini 함수 후 응답: "${finalText.slice(0, 80)}")`
     );
 
-    sendResponse(ws, finalText);
+    sendResponse(ws, responseId, finalText);
 
   } catch (err) {
     console.error(
@@ -306,7 +292,7 @@ async function handleTranscript(ws, session, transcript) {
     );
     // Send a graceful fallback — voice calls must not go silent
     // (음성 통화는 무음이 되면 안 됨 — 우아한 폴백 전송)
-    sendResponse(ws, "I'm sorry, I had a little trouble. Could you please say that again?");
+    sendResponse(ws, responseId, "I'm sorry, I had a little trouble. Could you please say that again?");
   }
 }
 
@@ -462,22 +448,25 @@ function buildMasterPrompt(storeData) {
 
 /**
  * Send a Retell-protocol response frame over the WebSocket.
+ * response_id MUST be echoed from the triggering request — Retell uses it to sequence audio.
  * No-ops if the socket is not in OPEN state to prevent write-after-close errors.
  * (WebSocket을 통해 Retell 프로토콜 응답 프레임 전송.
+ *  response_id는 요청에서 그대로 반환 필수 — Retell이 오디오 순서 지정에 사용.
  *  쓰기 후 닫기 오류 방지를 위해 소켓이 OPEN 상태가 아니면 아무것도 하지 않음)
  *
  * @param {import('ws').WebSocket} ws
+ * @param {number}  responseId — echoed from the response_required frame (response_required 프레임에서 반환)
  * @param {string}  content    — text the Retell TTS engine will speak (Retell TTS 엔진이 말할 텍스트)
  * @param {boolean} [endCall]  — true to instruct Retell to hang up (true이면 Retell에 전화 종료 지시)
  */
-function sendResponse(ws, content, endCall = false) {
+function sendResponse(ws, responseId, content, endCall = false) {
   if (ws.readyState !== ws.OPEN) return; // Guard: do not write to a closing/closed socket (가드: 닫히는/닫힌 소켓에 쓰기 금지)
 
   ws.send(
     JSON.stringify({
-      response_type:    'response',
+      response_id:      responseId,   // Must match the request's response_id for Retell audio sequencing (Retell 오디오 순서 지정을 위해 요청의 response_id와 일치해야 함)
       content,
-      content_complete: true,   // Signals the complete utterance — no streaming chunks (완전한 발화 신호 — 스트리밍 청크 없음)
+      content_complete: true,         // Signals the complete utterance — no streaming chunks (완전한 발화 신호 — 스트리밍 청크 없음)
       end_call:         endCall,
     })
   );
