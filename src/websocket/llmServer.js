@@ -393,15 +393,15 @@ async function fetchStoreData(agentId) {
   // (디버그: 네트워크 호출 전 Supabase URL 존재 여부 확인)
   console.log('[DB Debug] Connecting to Supabase URL:', process.env.SUPABASE_URL ? 'Loaded' : 'MISSING!');
 
-  // Production: query the agents table including all knowledge fields added in Step 8
-  // (운영: Step 8에서 추가된 모든 지식 필드를 포함하여 agents 테이블 조회)
+  // Query the stores table matching on retell_agent_id — the actual schema uses 'stores', not 'agents'
+  // (실제 스키마는 'agents'가 아닌 'stores' 테이블 사용 — retell_agent_id 컬럼으로 조회)
   const { data, error } = await supabase
-    .from('agents')
+    .from('stores')
     .select(
       'id, store_name, pos_type, pos_api_key, payment_type, timezone, active, ' +
       'system_prompt, menu_cache, business_hours, parking_info, custom_knowledge'
     )
-    .eq('id', agentId)
+    .eq('retell_agent_id', agentId)
     .single();
 
   if (error) {
