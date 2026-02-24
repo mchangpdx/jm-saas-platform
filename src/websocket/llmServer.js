@@ -141,9 +141,9 @@ export function setupWebSocket(httpServer) {
     };
 
     console.log(
-      `[WS] Session ready | agent: ${agentId} | store: ${storeData.store_name} | ` +
+      `[WS] Session ready | agent: ${agentId} | store: ${storeData.store_name ?? '(unnamed)'} | ` +
       `master prompt: ${masterPrompt.length} chars ` +
-      `(세션 준비 완료 | 에이전트: ${agentId} | 스토어: ${storeData.store_name} | ` +
+      `(세션 준비 완료 | 에이전트: ${agentId} | 스토어: ${storeData.store_name ?? '(unnamed)'} | ` +
       `마스터 프롬프트: ${masterPrompt.length}자)`
     );
 
@@ -395,12 +395,11 @@ async function fetchStoreData(agentId) {
 
   // Query the stores table matching on retell_agent_id — the actual schema uses 'stores', not 'agents'
   // (실제 스키마는 'agents'가 아닌 'stores' 테이블 사용 — retell_agent_id 컬럼으로 조회)
+  // Select all columns — avoids 42703 errors when the schema evolves or column names differ
+  // (모든 컬럼 선택 — 스키마 변경이나 컬럼명 불일치로 인한 42703 오류 방지)
   const { data, error } = await supabase
     .from('stores')
-    .select(
-      'id, store_name, pos_type, pos_api_key, payment_type, timezone, active, ' +
-      'system_prompt, menu_cache, business_hours, parking_info, custom_knowledge'
-    )
+    .select('*')
     .eq('retell_agent_id', agentId)
     .single();
 
@@ -449,7 +448,7 @@ function buildMasterPrompt(storeData) {
   // Fallback if the store has no prompts configured yet (스토어에 프롬프트가 아직 설정되지 않은 경우 폴백)
   if (sections.length === 0) {
     return (
-      `You are a helpful voice ordering assistant for ${storeData.store_name}. ` +
+      `You are a helpful voice ordering assistant for ${storeData.store_name ?? 'this store'}. ` +
       `Help customers browse the menu and place orders clearly and efficiently.`
     );
   }
@@ -492,7 +491,7 @@ function sendResponse(ws, content, endCall = false) {
 function buildStoreContext(storeData) {
   return {
     agentId:     storeData.id,
-    storeName:   storeData.store_name,
+    storeName:   storeData.store_name ?? null,
     posType:     storeData.pos_type,
     posApiKey:   storeData.pos_api_key,
     paymentType: storeData.payment_type,
