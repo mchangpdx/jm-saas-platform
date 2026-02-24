@@ -8,7 +8,9 @@
     "start": "node src/app.js",
     "dev": "node --watch src/app.js",
     "worker": "node src/queue/worker.js",
-    "worker:dev": "node --watch src/queue/worker.js"
+    "worker:dev": "node --watch src/queue/worker.js",
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -29,5 +31,8 @@
     "multi-tenant"
   ],
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
 }
