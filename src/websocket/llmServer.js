@@ -64,11 +64,7 @@
 
 import { WebSocketServer }      from 'ws';
 import { supabase }             from '../config/supabase.js';
-import {
-  createGenerationModel,
-  extractOrderIntent,
-}                               from '../services/llm/gemini.js';
-import { enqueueOrder }         from '../queue/producer.js';
+import { createGenerationModel } from '../services/llm/gemini.js';
 
 // WebSocket path — must match the path configured in Retell's agent dashboard
 // (WebSocket 경로 — Retell 에이전트 대시보드에 설정된 경로와 일치해야 함)
@@ -637,53 +633,167 @@ function makeAbortError(message) {
 // ── Function Call Executor ────────────────────────────────────────────────────
 
 /**
- * Execute a Gemini-requested function call and return the result payload.
- * The payload is injected back into the conversation as a functionResponse part.
- * (Gemini가 요청한 함수 호출을 실행하고 결과 페이로드 반환.
- *  페이로드는 functionResponse 파트로 대화에 다시 주입됨)
+ * Execute a Gemini-requested function call and return a result payload.
+ * The payload is injected back into the conversation as a functionResponse part,
+ * allowing Gemini to formulate a natural spoken reply for the caller.
  *
- * @param {string} fnName
- * @param {object} fnArgs
- * @param {object} session
- * @returns {Promise<object>}
+ * Active functions perform real database writes and return success/failure.
+ * Stub functions skip the DB entirely and return a holding message so Gemini
+ * can gracefully inform the caller that the feature is under construction.
+ *
+ * All errors are caught and returned as structured failure payloads — never thrown —
+ * so the isGenerating lock in handleTranscript is always released by the outer finally.
+ *
+ * (Gemini가 요청한 함수를 실행하고 결과 페이로드 반환.
+ *  페이로드는 functionResponse 파트로 대화에 주입 — Gemini가 자연스러운 음성 응답 생성.
+ *  활성 함수: 실제 DB 쓰기 후 성공/실패 반환.
+ *  스텁 함수: DB 접근 없이 안내 메시지 반환 — Gemini가 고객에게 정중히 안내.
+ *  오류는 항상 구조화된 실패 페이로드로 반환 — 절대 throw 안 함.
+ *  handleTranscript의 isGenerating 잠금이 항상 finally로 해제되도록 보장)
+ *
+ * @param {string} fnName   — Gemini-chosen function name (Gemini가 선택한 함수명)
+ * @param {object} fnArgs   — Gemini-extracted arguments (Gemini가 추출한 인수)
+ * @param {object} session  — live WebSocket session (라이브 WebSocket 세션)
+ * @returns {Promise<object>} payload injected into Gemini as functionResponse (functionResponse로 주입되는 페이로드)
  */
 async function executeFunctionCall(fnName, fnArgs, session) {
-  // ── get_menu ────────────────────────────────────────────────────────────────
+
+  // ── get_menu ───────────────────────────────────────────────────────────────
+  // Return pre-cached menu text — no network call needed (사전 캐시된 메뉴 텍스트 반환 — 네트워크 호출 불필요)
   if (fnName === 'get_menu') {
-    // Use the pre-fetched menu_cache from storeData — avoids a live POS round-trip per call
-    // (사전 조회된 storeData의 menu_cache 사용 — 통화마다 라이브 POS 왕복 방지)
     const menuContent = session.storeData.menu_cache ?? 'Menu information is currently unavailable.';
     return { menu: menuContent };
   }
 
-  // ── create_order ────────────────────────────────────────────────────────────
-  if (fnName === 'create_order') {
-    const storeContext = buildStoreContext(session.storeData);
-    const orderData    = extractOrderIntent(
-      { type: 'TOOL_CALL', name: fnName, args: fnArgs },
-      storeContext
+  // ── place_order (ACTIVE) ───────────────────────────────────────────────────
+  // Insert a confirmed order row into the orders table.
+  // Returns success with order_id, or a failure message Gemini can voice to the caller.
+  // (확정된 주문을 orders 테이블에 삽입.
+  //  성공 시 order_id 반환, 실패 시 Gemini가 고객에게 안내할 실패 메시지 반환)
+  if (fnName === 'place_order') {
+    console.log(
+      `[WS] [${session.agentId}] place_order | phone: ${fnArgs.customer_phone} | ` +
+      `items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
     );
 
-    // Fire-and-forget — the queue worker handles POS submission and payment asynchronously
-    // (fire-and-forget — 큐 워커가 POS 제출과 결제를 비동기적으로 처리)
-    enqueueOrder(orderData, storeContext).catch((err) => {
-      console.error(
-        `[WS] [${session.agentId}] Enqueue failed for order ${orderData.orderId}: ${err.message} ` +
-        `(주문 큐 등록 실패)`
-      );
-    });
+    const { data, error } = await supabase
+      .from('orders')
+      .insert({
+        agent_id:       session.agentId,
+        store_id:       session.storeData.id,
+        customer_phone: fnArgs.customer_phone,
+        items:          fnArgs.items,         // JSON array of { name, quantity } (항목 배열)
+        status:         'pending',
+        created_at:     new Date().toISOString(),
+      })
+      .select('id')
+      .single();
 
+    if (error) {
+      // Log the raw error but return a clean message Gemini can speak (원시 오류 기록, Gemini용 안내 메시지 반환)
+      console.error(`[WS] [${session.agentId}] place_order DB error (주문 DB 오류):`, error);
+      return {
+        success: false,
+        error:   'We were unable to place your order right now. Please try again or call us directly.',
+      };
+    }
+
+    console.log(`[WS] [${session.agentId}] place_order success | order_id: ${data.id} (주문 성공)`);
     return {
-      success: true,
-      orderId: orderData.orderId,
-      total:   `$${(orderData.totalAmountCents / 100).toFixed(2)}`,
-      items:   orderData.items.length,
+      success:  true,
+      order_id: data.id,
+      message:  `Order confirmed! Your order ID is ${data.id}. We will have it ready for you shortly.`,
     };
   }
 
-  // Unknown function — return a neutral payload so Gemini can gracefully recover
-  // (알 수 없는 함수 — Gemini가 정상 복구할 수 있도록 중립 페이로드 반환)
-  console.warn(`[WS] Unknown function call: "${fnName}" (알 수 없는 함수 호출: "${fnName}")`);
+  // ── make_reservation (ACTIVE) ──────────────────────────────────────────────
+  // Insert a confirmed reservation row into the reservations table.
+  // Returns success with reservation_id, or a failure message Gemini can voice.
+  // (확정된 예약을 reservations 테이블에 삽입.
+  //  성공 시 reservation_id 반환, 실패 시 Gemini용 안내 메시지 반환)
+  if (fnName === 'make_reservation') {
+    console.log(
+      `[WS] [${session.agentId}] make_reservation | phone: ${fnArgs.customer_phone} | ` +
+      `${fnArgs.date} ${fnArgs.time} | party: ${fnArgs.party_size} (예약 접수 시도)`
+    );
+
+    const { data, error } = await supabase
+      .from('reservations')
+      .insert({
+        agent_id:         session.agentId,
+        store_id:         session.storeData.id,
+        customer_phone:   fnArgs.customer_phone,
+        reservation_date: fnArgs.date,
+        reservation_time: fnArgs.time,
+        party_size:       fnArgs.party_size,
+        status:           'pending',
+        created_at:       new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      // Log the raw error but return a clean message Gemini can speak (원시 오류 기록, Gemini용 안내 메시지 반환)
+      console.error(`[WS] [${session.agentId}] make_reservation DB error (예약 DB 오류):`, error);
+      return {
+        success: false,
+        error:   'We were unable to process your reservation right now. Please call us directly to book.',
+      };
+    }
+
+    console.log(`[WS] [${session.agentId}] make_reservation success | reservation_id: ${data.id} (예약 성공)`);
+    return {
+      success:        true,
+      reservation_id: data.id,
+      message:        `Reservation confirmed for ${fnArgs.party_size} on ${fnArgs.date} at ${fnArgs.time}. ` +
+                      `Your confirmation ID is ${data.id}. See you then!`,
+    };
+  }
+
+  // ── check_order_status (STUB) ──────────────────────────────────────────────
+  // Feature under construction — return a graceful holding message to Gemini.
+  // Gemini will speak this to the caller naturally.
+  // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환. Gemini가 고객에게 자연스럽게 안내)
+  if (fnName === 'check_order_status') {
+    console.log(`[WS] [${session.agentId}] check_order_status called (stub) (주문 상태 확인 호출 — 스텁)`);
+    return {
+      status:  'under_construction',
+      message: 'Order status lookup is not yet available through this line. ' +
+               'Please call our main number and a staff member will check your order for you.',
+    };
+  }
+
+  // ── cancel_or_modify (STUB) ────────────────────────────────────────────────
+  // Feature under construction — return a graceful holding message to Gemini.
+  // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환)
+  if (fnName === 'cancel_or_modify') {
+    console.log(`[WS] [${session.agentId}] cancel_or_modify called (stub) (취소/변경 호출 — 스텁)`);
+    return {
+      status:  'under_construction',
+      message: 'Order changes and cancellations are not yet available through this line. ' +
+               'Please call our main number and a staff member will assist you right away.',
+    };
+  }
+
+  // ── transfer_to_human (STUB) ───────────────────────────────────────────────
+  // Signal that this call should be escalated — return a message Gemini voices before transfer.
+  // (통화 에스컬레이션 신호 — 이관 전 Gemini가 발화할 메시지 반환)
+  if (fnName === 'transfer_to_human') {
+    console.log(
+      `[WS] [${session.agentId}] transfer_to_human called | reason: ${fnArgs.reason} ` +
+      `(사람 직원 이관 호출 | 이유: ${fnArgs.reason})`
+    );
+    return {
+      status:  'transferring',
+      message: 'Of course! Let me transfer you to one of our staff members right now. ' +
+               'Please hold for just a moment.',
+    };
+  }
+
+  // ── Unknown function — neutral fallback ───────────────────────────────────
+  // Should not occur in production; Gemini is constrained to the declared tools.
+  // (프로덕션에서 발생하면 안 됨 — Gemini는 선언된 도구만 호출 가능)
+  console.warn(`[WS] [${session.agentId}] Unknown function call: "${fnName}" (알 수 없는 함수 호출: "${fnName}")`);
   return { error: `Function "${fnName}" is not implemented.` };
 }
 

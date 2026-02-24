@@ -36,69 +36,164 @@ export const POS_TOOLS = [
     functionDeclarations: [
 
       // ── get_menu ────────────────────────────────────────────────────────────
+      // Utility: fetch the store menu from pre-loaded cache — no DB round-trip.
+      // (유틸리티: 미리 로드된 캐시에서 매장 메뉴 조회 — DB 왕복 없음)
       {
         name: 'get_menu',
         description:
-          'Retrieves the current available menu items and their prices from the POS system. ' +
-          'Call this when the customer asks what is available to order or requests the menu. ' +
-          '(고객이 주문 가능 메뉴를 물을 때 POS에서 현재 메뉴와 가격 조회)',
+          'Retrieves the current menu items and prices for this store. ' +
+          'Call this whenever the customer asks what is available to order or requests the menu. ' +
+          '(고객이 주문 가능 메뉴 또는 가격을 물을 때 호출)',
         parameters: {
           type:       'object',
-          properties: {},   // No input required — menu is store-global (입력 파라미터 없음 — 메뉴는 매장 전체 공유)
+          properties: {},  // No input required — menu is store-global (입력 파라미터 없음 — 메뉴는 매장 전체 공유)
           required:   [],
         },
       },
 
-      // ── create_order ────────────────────────────────────────────────────────
+      // ── place_order (ACTIVE) ─────────────────────────────────────────────────
+      // Inserts a confirmed order row into the orders table.
+      // Call ONLY after the customer has explicitly confirmed every item and quantity.
+      // (확정된 주문을 orders 테이블에 삽입. 고객이 모든 항목과 수량을 명시적으로 확인한 후에만 호출)
       {
-        name: 'create_order',
+        name: 'place_order',
         description:
-          'Places a new order in the POS system with the specified items and quantities. ' +
-          'Call this ONLY after the customer has explicitly confirmed every item and the total price. ' +
-          '(고객이 모든 항목과 총 금액을 명시적으로 확인한 후에만 POS에 주문 생성)',
+          'Places a new food or drink order for the customer. ' +
+          'Call this ONLY after the customer has confirmed every item and quantity out loud. ' +
+          '(고객이 모든 항목과 수량을 구두로 확인한 후에만 주문 접수)',
         parameters: {
           type: 'object',
           properties: {
 
+            customer_phone: {
+              type:        'string',
+              description: 'Customer phone number used to identify and follow up on the order (주문 확인 및 후속 조치에 사용되는 고객 전화번호)',
+            },
+
             items: {
               type:        'array',
-              description: 'List of items the customer wants to order (고객이 주문하려는 항목 목록)',
+              description: 'List of items the customer has confirmed they want to order (고객이 확인한 주문 항목 목록)',
               items: {
                 type: 'object',
                 properties: {
-                  itemId: {
-                    type:        'string',
-                    description: 'POS system item ID if known from get_menu (get_menu로 알게 된 POS 항목 ID)',
-                  },
                   name: {
                     type:        'string',
-                    description: 'Human-readable item name as spoken by the customer (고객이 말한 항목명)',
+                    description: 'Menu item name exactly as spoken by the customer (고객이 말한 메뉴 항목명)',
                   },
                   quantity: {
                     type:        'integer',
-                    description: 'Number of units to order — must be ≥ 1 (주문 수량 — 최소 1 이상)',
-                  },
-                  priceCents: {
-                    type:        'integer',
-                    description: 'Unit price in cents from the menu (메뉴의 단위 가격, 센트)',
+                    description: 'Number of units — must be ≥ 1 (주문 수량 — 최소 1 이상)',
                   },
                 },
-                required: ['name', 'quantity'], // itemId + priceCents are best-effort from menu lookup (항목 ID와 가격은 메뉴 조회에서 최선으로 채움)
+                required: ['name', 'quantity'],
               },
             },
 
-            totalAmountCents: {
-              type:        'integer',
-              description: 'Total order amount in cents — sum of (quantity × priceCents) for all items (총 주문 금액, 센트 — 모든 항목의 수량×단가 합계)',
+          },
+          required: ['customer_phone', 'items'],
+        },
+      },
+
+      // ── make_reservation (ACTIVE) ────────────────────────────────────────────
+      // Inserts a confirmed reservation row into the reservations table.
+      // (확정된 예약을 reservations 테이블에 삽입)
+      {
+        name: 'make_reservation',
+        description:
+          'Makes a table reservation for the customer. ' +
+          'Collect date, time, party size, and phone number before calling this. ' +
+          '(테이블 예약 접수. 날짜, 시간, 인원, 전화번호를 수집한 후 호출)',
+        parameters: {
+          type: 'object',
+          properties: {
+
+            customer_phone: {
+              type:        'string',
+              description: 'Customer phone number for reservation confirmation (예약 확인을 위한 고객 전화번호)',
             },
 
-            specialInstructions: {
+            date: {
               type:        'string',
-              description: 'Any special requests or notes from the customer, e.g. allergies, modifications (고객 특별 요청 또는 메모 — 알레르기, 변경 사항 등)',
+              description: 'Reservation date in YYYY-MM-DD format (예약 날짜 — YYYY-MM-DD 형식)',
+            },
+
+            time: {
+              type:        'string',
+              description: 'Reservation time in HH:MM 24-hour format (예약 시간 — HH:MM 24시간 형식)',
+            },
+
+            party_size: {
+              type:        'integer',
+              description: 'Number of guests — must be ≥ 1 (예약 인원 — 최소 1명 이상)',
             },
 
           },
-          required: ['items', 'totalAmountCents'],
+          required: ['customer_phone', 'date', 'time', 'party_size'],
+        },
+      },
+
+      // ── check_order_status (STUB) ────────────────────────────────────────────
+      // Feature under construction — returns a graceful holding message to Gemini.
+      // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환)
+      {
+        name: 'check_order_status',
+        description:
+          'Checks the status of an existing order by customer phone number. ' +
+          '(고객 전화번호로 기존 주문 상태 확인)',
+        parameters: {
+          type: 'object',
+          properties: {
+            customer_phone: {
+              type:        'string',
+              description: 'Phone number used when the order was placed (주문 시 사용한 전화번호)',
+            },
+          },
+          required: ['customer_phone'],
+        },
+      },
+
+      // ── cancel_or_modify (STUB) ──────────────────────────────────────────────
+      // Feature under construction — returns a graceful holding message to Gemini.
+      // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환)
+      {
+        name: 'cancel_or_modify',
+        description:
+          'Cancels or modifies an existing order or reservation. ' +
+          '(기존 주문 또는 예약 취소 또는 변경)',
+        parameters: {
+          type: 'object',
+          properties: {
+            customer_phone: {
+              type:        'string',
+              description: 'Phone number associated with the order or reservation (주문 또는 예약에 연결된 전화번호)',
+            },
+            request_details: {
+              type:        'string',
+              description: 'Description of what the customer wants to cancel or change (취소 또는 변경 내용 설명)',
+            },
+          },
+          required: ['customer_phone', 'request_details'],
+        },
+      },
+
+      // ── transfer_to_human (STUB) ─────────────────────────────────────────────
+      // Signals that the call should be escalated to a human staff member.
+      // (사람 직원에게 통화를 에스컬레이션해야 함을 신호)
+      {
+        name: 'transfer_to_human',
+        description:
+          'Escalates the call to a human staff member when the request is outside the AI\'s capabilities. ' +
+          'Use this for complaints, complex special requests, or when the customer explicitly asks for a person. ' +
+          '(AI 처리 범위를 벗어난 요청 시 사람 직원에게 에스컬레이션. 불만, 복잡한 요청, 또는 고객이 직접 사람을 요청할 때 사용)',
+        parameters: {
+          type: 'object',
+          properties: {
+            reason: {
+              type:        'string',
+              description: 'Brief description of why the call is being escalated (에스컬레이션 이유에 대한 간략한 설명)',
+            },
+          },
+          required: ['reason'],
         },
       },
 
