@@ -410,7 +410,9 @@ async function fetchStoreData(agentId) {
     return null;
   }
 
-  if (!data.active) {
+  // Strict boolean check — is_active === false rejects; NULL (pre-migration rows) passes through
+  // (엄격한 불리언 확인 — is_active가 false면 거절; NULL(마이그레이션 전 행)은 통과)
+  if (data.is_active === false) {
     console.warn(`[WS] Agent ${agentId} is inactive — rejecting connection (에이전트 비활성 — 연결 거절)`);
     return null;
   }
