@@ -147,6 +147,26 @@ export function setupWebSocket(httpServer) {
       `마스터 프롬프트: ${masterPrompt.length}자)`
     );
 
+    // ── Proactive Greeting ─────────────────────────────────────────────────
+    // Retell expects the custom LLM to speak first. Send an initial greeting
+    // immediately after the session is ready using response_id: 0.
+    // The prompt is a hidden system turn — it does not appear in the call transcript.
+    // (Retell은 커스텀 LLM이 먼저 말하기를 기대. 세션 준비 후 즉시 response_id: 0으로 인사말 전송.
+    //  이 프롬프트는 숨겨진 시스템 턴 — 통화 transcript에 나타나지 않음)
+    try {
+      const greetingTurn = await chat.sendMessage(
+        'Greet the caller warmly, introduce yourself by name, and ask how you can help them today. Keep it to one or two sentences.'
+      );
+      const greetingText = greetingTurn.response.text();
+      console.log(`[WS] [${agentId}] Greeting: "${greetingText.slice(0, 80)}…" (인사말 전송)`);
+      sendResponse(ws, 0, greetingText); // response_id 0 signals the proactive opening utterance (response_id 0은 선제적 첫 발화를 나타냄)
+    } catch (err) {
+      console.error(`[WS] [${agentId}] Greeting generation failed: ${err.message} (인사말 생성 실패)`);
+      // Fall back to a static greeting so the call never opens with silence
+      // (Gemini 실패 시 정적 인사말로 폴백 — 무음으로 시작하지 않도록)
+      sendResponse(ws, 0, "Hello! I'm your voice assistant. How can I help you today?");
+    }
+
     // ── Message Handler ────────────────────────────────────────────────────
     // Only reached after successful initialisation — no init guard required.
     // (초기화 성공 후에만 도달 — 초기화 가드 불필요)
