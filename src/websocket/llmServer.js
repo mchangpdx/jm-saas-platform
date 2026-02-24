@@ -22,38 +22,67 @@
  *   Partial chunk  : { response_type, response_id, content, content_complete: false, end_call: false }
  *   Final chunk    : { response_type, response_id, content, content_complete: true,  end_call: false }
  *
- * ── Streaming + Barge-in Architecture ────────────────────────────────────────
+ * ── Three-Pillar Architecture: Streaming + Barge-in + Freeze Prevention ───────
  *
- * Two mechanisms work together to enable interruption without ChatSession corruption:
+ * PILLAR 1 — Ultra-Fast Streaming
+ *   model.generateContentStream({ contents: history }) streams tokens as they arrive.
+ *   Each chunk is forwarded to Retell immediately via sendChunk(..., false).
+ *   A final sendChunk(..., true) signals utterance completion to Retell's TTS engine.
+ *   (토큰이 도착하는 즉시 Retell에 스트리밍. 최종 프레임으로 TTS 완료 신호 전송)
  *
- *   1. activeResponseId  — updated immediately on every incoming frame.
- *      The streaming loop checks this before each sendChunk(); if the ID no longer
- *      matches, the loop exits silently and the stale chunks never reach Retell.
+ * PILLAR 2 — Interruption / Barge-in via AbortController
+ *   Every generation owns an AbortController. On update_only or a new response_required,
+ *   session.abortController.abort() fires immediately — BEFORE any queue work starts.
+ *   generateWithAbort() races the Gemini call against the abort signal: the moment abort()
+ *   is called, the pending await rejects with AbortError, exiting handleTranscript instantly
+ *   without waiting for the next chunk boundary. The finally block then runs and the queue
+ *   advances to the next generation.
+ *   (모든 생성은 AbortController를 소유. 끼어들기 시 abort() 즉시 호출.
+ *    generateWithAbort()가 abort 신호에 대해 경쟁 — await 즉시 거절, finally 즉시 실행)
  *
- *   2. generationQueue   — a Promise chain that serialises all session.chat calls.
- *      This prevents two concurrent sendMessageStream() calls on the same ChatSession,
- *      which would corrupt its internal history and cause silent failures on future turns.
- *      Because activeResponseId is updated immediately (before the queue is chained),
- *      interrupted generations are skipped at the head of the queue with zero latency.
+ * PILLAR 3 — Absolute Freeze Prevention
+ *   isGenerating is set to true BEFORE the first await and ALWAYS reset to false in a
+ *   finally block — no execution path can skip it, including AbortError, network errors,
+ *   and function-call chain failures. This guarantees the generationQueue always advances.
+ *   Manual history[] management replaces ChatSession: history is committed only after a
+ *   clean (non-aborted) generation completes. On abort or error, history.length is
+ *   restored to the pre-turn checkpoint — no partial responses contaminate future turns.
+ *   (isGenerating은 finally로 항상 해제 — 어떤 실행 경로도 건너뛸 수 없음.
+ *    수동 history[] 관리: 비중단 생성 완료 후에만 커밋. 중단 시 체크포인트로 롤백)
  *
- * (두 메커니즘이 협력하여 ChatSession 손상 없이 끼어들기를 구현:
- *   1. activeResponseId — 모든 수신 프레임에서 즉시 업데이트.
- *      스트리밍 루프가 각 sendChunk() 전에 확인 — ID 불일치 시 즉시 종료.
- *   2. generationQueue — 모든 chat 호출을 직렬화하는 Promise 체인.
- *      동일 ChatSession에서 두 sendMessageStream() 호출의 동시 실행을 방지.)
+ * Why model.generateContentStream() instead of ChatSession.sendMessageStream()?
+ *   ChatSession holds opaque internal state. If a call hangs (slow first token, network
+ *   stall), there is no way to abort the pending await — the generationQueue deadlocks
+ *   and every subsequent response_required piles up unreachable. With generateContentStream
+ *   and a manually managed history array, each call is a fully independent HTTP request.
+ *   The abort signal can reject the await before the request even starts, guaranteeing
+ *   the finally block runs and the queue always advances.
+ *   (ChatSession은 불투명한 내부 상태 보유. 호출이 중단되면 await를 중단할 방법이 없어
+ *    generationQueue 교착 발생. generateContentStream + 수동 history로 완전히 독립된 HTTP 요청.
+ *    abort 신호가 요청 시작 전에 await를 거절 → finally 항상 실행 → 큐 항상 진행)
  */
 
-import { WebSocketServer } from 'ws';
-import { supabase }        from '../config/supabase.js';
+import { WebSocketServer }      from 'ws';
+import { supabase }             from '../config/supabase.js';
 import {
-  createChatSession,
+  createGenerationModel,
   extractOrderIntent,
-}                          from '../services/llm/gemini.js';
-import { enqueueOrder }    from '../queue/producer.js';
+}                               from '../services/llm/gemini.js';
+import { enqueueOrder }         from '../queue/producer.js';
 
 // WebSocket path — must match the path configured in Retell's agent dashboard
 // (WebSocket 경로 — Retell 에이전트 대시보드에 설정된 경로와 일치해야 함)
 const WS_PATH = '/llm-websocket';
+
+// Gemini request timeout — abort any call that hasn't started streaming within this window
+// (Gemini 요청 타임아웃 — 이 시간 내에 스트리밍이 시작되지 않으면 중단)
+const GEMINI_TIMEOUT_MS = 15_000;
+
+// Greeting prompt — injected as a hidden first turn to seed the LLM persona
+// (인사말 프롬프트 — LLM 페르소나를 시작하기 위한 숨겨진 첫 번째 턴으로 주입)
+const GREETING_PROMPT =
+  'Greet the caller warmly, introduce yourself by name, and ask how you can help them today. ' +
+  'Keep it to one or two natural sentences suitable for a voice call.';
 
 // ── Public Setup Function ─────────────────────────────────────────────────────
 
@@ -83,6 +112,7 @@ export function setupWebSocket(httpServer) {
 
   // ── Connection Handler ─────────────────────────────────────────────────────
   wss.on('connection', async (ws, req) => {
+
     // ── Extract agent_id and call_id from URL ──────────────────────────────
     // Retell format: /llm-websocket/<call_id>?agent_id=<agent_id>
     // (Retell 형식: /llm-websocket/<call_id>?agent_id=<agent_id>)
@@ -106,65 +136,69 @@ export function setupWebSocket(httpServer) {
     // ── Fetch store configuration on connect ───────────────────────────────
     const storeData = await fetchStoreData(agentId);
     if (!storeData) {
-      console.error(`[DB Error] No store found for agent_id: ${agentId} (스토어 없음 — 연결 종료)`);
+      console.error(`[WS] No store found for agent_id: ${agentId} — closing (스토어 없음 — 연결 종료)`);
       ws.close(1008, `No store found for agent_id: ${agentId}`);
       return;
     }
 
-    // ── Initialise Gemini session ──────────────────────────────────────────
+    // ── Initialise Gemini model with store master prompt ───────────────────
+    // createGenerationModel() returns a raw GenerativeModel — NOT a ChatSession.
+    // We call model.generateContentStream({ contents: history }) on every turn,
+    // passing the full history array each time. This makes every call fully
+    // independent and trivially abortable via AbortController.
+    // (createGenerationModel()은 원시 GenerativeModel 반환 — ChatSession 아님.
+    //  매 턴마다 model.generateContentStream({ contents: history }) 호출.
+    //  전체 history 배열을 매번 전달 — 각 호출이 완전히 독립적이고 AbortController로 중단 가능)
     const masterPrompt = buildMasterPrompt(storeData);
-    const chat         = createChatSession(masterPrompt);
+    const model        = createGenerationModel(masterPrompt);
 
     // ── Per-connection session state ───────────────────────────────────────
-    // activeResponseId: the response_id whose stream is currently allowed to send chunks.
-    //   Set to the new responseId on response_required; set to null on update_only (barge-in).
-    //   The streaming loop exits silently when this no longer matches.
-    // generationQueue: Promise chain that serialises all chat.sendMessageStream() calls.
-    //   Prevents concurrent calls on the same ChatSession — which corrupt its history.
-    //   activeResponseId is updated immediately (before the queue appends), so superseded
-    //   generations are skipped at queue head with no added latency.
-    // (activeResponseId: 현재 청크 전송이 허용된 response_id.
-    //   response_required 시 새 responseId로 설정; update_only(끼어들기) 시 null로 설정.
-    //   스트리밍 루프는 불일치 시 조용히 종료.
-    //   generationQueue: 모든 sendMessageStream() 호출을 직렬화하는 Promise 체인.
-    //   동일 ChatSession 동시 호출 방지 — 히스토리 손상 유발.
-    //   activeResponseId는 즉시 업데이트되므로 추월된 생성은 큐 헤드에서 즉시 건너뜀)
+    //
+    //  model          — GenerativeModel configured with the store's master prompt.
+    //  history        — Plain JS array of { role, parts } turns. Manually managed:
+    //                   pushed BEFORE generation, rolled back on abort or error.
+    //  isGenerating   — Boolean lock. Set true BEFORE any await; always released in
+    //                   a finally block. Lets the message handler know whether to call abort().
+    //  abortController— Owned by the current generation. Replaced atomically on each new turn.
+    //                   Calling .abort() races against the pending generateContentStream await
+    //                   and rejects it via generateWithAbort(), triggering the finally block.
+    //  generationQueue— Promise chain. Serialises history writes so two concurrent calls
+    //                   never mutate the history array at the same time.
+    //                   Because abort() unblocks the current await immediately, the queue
+    //                   advances with near-zero latency after a barge-in.
+    //
+    // (model: 마스터 프롬프트로 설정된 GenerativeModel.
+    //  history: { role, parts } 턴의 일반 JS 배열. 생성 전 추가, 중단/오류 시 롤백.
+    //  isGenerating: finally로 항상 해제되는 불리언 잠금.
+    //  abortController: 현재 생성이 소유. 새 턴마다 원자적으로 교체.
+    //  generationQueue: 히스토리 쓰기 직렬화 Promise 체인.
+    //  abort()가 await를 즉시 해제하므로 끼어들기 후 거의 지연 없이 큐 진행)
     const session = {
       agentId,
       callId,
       storeData,
-      chat,
-      activeResponseId: null,
-      generationQueue:  Promise.resolve(),
+      model,
+      history:         [],
+      isGenerating:    false,
+      abortController: null,
+      generationQueue: Promise.resolve(),
     };
 
     console.log(
       `[WS] Session ready | agent: ${agentId} | store: ${storeData.store_name ?? '(unnamed)'} | ` +
-      `master prompt: ${masterPrompt.length} chars ` +
-      `(세션 준비 완료 | 에이전트: ${agentId} | 마스터 프롬프트: ${masterPrompt.length}자)`
+      `prompt: ${masterPrompt.length} chars ` +
+      `(세션 준비 완료 | 에이전트: ${agentId} | 프롬프트: ${masterPrompt.length}자)`
     );
 
     // ── Proactive Greeting (response_id: 0) ───────────────────────────────
-    // Retell expects the LLM to speak first. Prompt Gemini with a hidden system
-    // turn so the greeting is persona-aware and consistent with the master prompt.
-    // (Retell은 LLM이 먼저 말하기를 기대. 숨겨진 시스템 턴으로 Gemini에 인사말 요청)
-    session.activeResponseId = 0;
-    session.generationQueue = session.generationQueue.then(async () => {
-      try {
-        const greetStream = await chat.sendMessageStream(
-          'Greet the caller warmly, introduce yourself by name, and ask how you can help them today. Keep it to one or two sentences.'
-        );
-        for await (const chunk of greetStream.stream) {
-          if (session.activeResponseId !== 0) return; // Superseded before greeting finished (인사 전 추월)
-          const text = textFromChunk(chunk);
-          if (text) sendChunk(ws, 0, text, false);
-        }
-        if (session.activeResponseId === 0) sendChunk(ws, 0, '', true); // Close greeting stream (인사 스트림 완료)
-      } catch (err) {
-        console.error(`[WS] [${agentId}] Greeting error (인사말 오류):`, err);
-        sendChunk(ws, 0, "Hello! I'm your voice assistant. How can I help you today?", true);
-      }
-    });
+    // Stream the opening utterance before the caller says anything.
+    // Uses a one-shot generateContentStream call that is NOT added to session.history —
+    // the greeting is a persona seed, not a real user turn.
+    // Runs through generationQueue so any early response_required waits for it to finish.
+    // (발신자가 말하기 전 여는 발화 스트리밍.
+    //  session.history에 추가되지 않는 일회성 generateContentStream 호출 — 인사말은 페르소나 시드.
+    //  early response_required가 완료를 기다리도록 generationQueue를 통해 실행)
+    _enqueueGeneration(ws, session, agentId, () => handleGreeting(ws, session));
 
     // ── Message Handler ────────────────────────────────────────────────────
     ws.on('message', (rawData) => {
@@ -177,35 +211,54 @@ export function setupWebSocket(httpServer) {
         return;
       }
 
-      // update_only — barge-in: user started speaking, silence the active stream immediately
-      // (update_only — 끼어들기: 사용자 발화 시작, 활성 스트림 즉시 침묵)
+      // update_only — barge-in: user interrupted, abort the active stream immediately.
+      // No new generation needed — Retell will send response_required when ready.
+      // (update_only — 끼어들기: 사용자 끊음, 활성 스트림 즉시 중단.
+      //  새 생성 불필요 — Retell이 준비되면 response_required 전송)
       if (msg.interaction_type === 'update_only') {
-        session.activeResponseId = null;
+        if (session.isGenerating && session.abortController) {
+          console.log(
+            `[WS] [${agentId}] Barge-in — aborting active generation (끼어들기 — 활성 생성 중단)`
+          );
+          session.abortController.abort();
+        }
         return;
       }
 
-      // response_required — Retell needs a spoken reply
-      // (response_required — Retell이 발화 응답을 요청)
+      // response_required — Retell needs a spoken reply.
+      // Abort any in-flight generation immediately, then enqueue the new turn.
+      // (response_required — Retell이 발화 응답 요청.
+      //  진행 중인 생성 즉시 중단 후 새 턴 큐에 추가)
       if (msg.interaction_type === 'response_required') {
         const responseId = msg.response_id;
+        const transcript = msg.transcript ?? [];
 
-        // Immediately update activeResponseId — this silences any in-progress stream
-        // at the next chunk boundary, with no queue wait required
-        // (즉시 activeResponseId 업데이트 — 다음 청크 경계에서 진행 중인 스트림 침묵.
-        //  큐 대기 없음)
-        session.activeResponseId = responseId;
+        // Abort the current generation IMMEDIATELY — before touching the queue.
+        // This races against generateWithAbort()'s abort listener and rejects
+        // the pending Gemini await, so the currently running handleTranscript
+        // reaches its finally block as soon as possible.
+        // (즉시 현재 생성 중단 — 큐에 접근하기 전.
+        //  generateWithAbort()의 abort 리스너와 경쟁하여 pending Gemini await 거절.
+        //  현재 실행 중인 handleTranscript가 가능한 빨리 finally 블록에 도달)
+        if (session.abortController) {
+          session.abortController.abort();
+        }
 
-        // Serialise the actual Gemini call behind the queue so ChatSession history
-        // is never written by two concurrent sendMessageStream() calls
-        // (실제 Gemini 호출을 큐 뒤에 직렬화 — 동시 sendMessageStream() 호출로
-        //  ChatSession 히스토리가 손상되지 않도록)
-        session.generationQueue = session.generationQueue.then(async () => {
-          // Skip if this generation was already superseded while waiting in queue
-          // (큐 대기 중 이미 추월된 경우 건너뜀)
-          if (session.activeResponseId !== responseId) return;
-          await handleTranscript(ws, session, msg.transcript ?? [], responseId);
-        }).catch((err) => {
-          console.error(`[WS] [${agentId}] Unhandled generation error (처리되지 않은 생성 오류):`, err);
+        // Create a fresh AbortController for this generation turn.
+        // The reference is captured in the closure so the queue entry can verify
+        // it hasn't been superseded again before the actual Gemini call starts.
+        // (이번 생성 턴을 위한 새 AbortController 생성.
+        //  참조는 클로저에서 캡처 — 큐 항목이 Gemini 호출 전에 추월 여부 확인)
+        const controller = new AbortController();
+        session.abortController = controller;
+
+        _enqueueGeneration(ws, session, agentId, () => {
+          // Verify this generation wasn't superseded while waiting in the queue.
+          // If it was, controller !== session.abortController, so we skip silently.
+          // (큐 대기 중 추월 여부 확인.
+          //  추월된 경우 controller !== session.abortController이므로 조용히 건너뜀)
+          if (session.abortController !== controller) return Promise.resolve();
+          return handleTranscript(ws, session, transcript, responseId, controller.signal);
         });
 
         return;
@@ -217,9 +270,8 @@ export function setupWebSocket(httpServer) {
 
     // ── Close Handler ──────────────────────────────────────────────────────
     ws.on('close', (code) => {
-      // Silence any pending stream by clearing activeResponseId
-      // (activeResponseId 초기화로 보류 중인 스트림 침묵)
-      session.activeResponseId = null;
+      // Abort any pending stream so the queue drains cleanly (보류 중인 스트림 중단 — 큐 정리)
+      if (session.abortController) session.abortController.abort();
       console.log(
         `[WS] Connection closed | agent: ${agentId} | call: ${callId ?? 'unknown'} | code: ${code} ` +
         `(연결 종료 | 에이전트: ${agentId} | 통화: ${callId ?? 'unknown'})`
@@ -236,124 +288,361 @@ export function setupWebSocket(httpServer) {
   return wss;
 }
 
+// ── Internal Queue Helper ─────────────────────────────────────────────────────
+
+/**
+ * Append a generation task to the session's generationQueue.
+ * The queue serialises all history writes — two generateContentStream() calls
+ * never overlap on the same history array.
+ * Errors inside the task are caught here so the queue always advances.
+ * (세션의 generationQueue에 생성 작업 추가.
+ *  큐는 모든 히스토리 쓰기를 직렬화 — 동일 history 배열에서 두 generateContentStream() 호출이 겹치지 않음.
+ *  작업 내부 오류는 여기서 처리 — 큐 항상 진행)
+ *
+ * @param {import('ws').WebSocket} ws
+ * @param {object}   session
+ * @param {string}   agentId    — for error logging (오류 로깅용)
+ * @param {Function} taskFn     — () => Promise<void> (generation work to serialise)
+ */
+function _enqueueGeneration(ws, session, agentId, taskFn) {
+  session.generationQueue = session.generationQueue
+    .then(() => taskFn())
+    .catch((err) => {
+      // Safety net: reset isGenerating if it somehow wasn't cleared by a finally block.
+      // This should not happen in practice, but guards against unforeseen code paths.
+      // (안전망: finally 블록에서 해제되지 않은 경우 isGenerating 재설정.
+      //  실제로 발생하지 않아야 하지만 예상치 못한 코드 경로에 대한 보호)
+      session.isGenerating = false;
+      console.error(`[WS] [${agentId}] Unhandled queue error (처리되지 않은 큐 오류):`, err);
+    });
+}
+
+// ── Greeting Handler ──────────────────────────────────────────────────────────
+
+/**
+ * Stream the proactive greeting for response_id 0 using a one-shot generation.
+ * The greeting prompt is NOT added to session.history — it is ephemeral persona seeding.
+ * Uses its own AbortController so it can be interrupted by an early response_required.
+ * (response_id 0에 대한 선제적 인사말을 일회성 생성으로 스트리밍.
+ *  인사말 프롬프트는 session.history에 추가되지 않음 — 임시 페르소나 시드.
+ *  자체 AbortController로 초기 response_required에 의해 중단 가능)
+ *
+ * @param {import('ws').WebSocket} ws
+ * @param {object} session
+ */
+async function handleGreeting(ws, session) {
+  const controller = new AbortController();
+  session.abortController = controller; // Allow early barge-in to abort the greeting (초기 끼어들기로 인사말 중단 허용)
+  session.isGenerating = true;          // Set BEFORE any await (모든 await 전에 설정)
+
+  // Greeting uses a fresh single-turn contents array — not session.history
+  // (인사말은 신선한 단일 턴 contents 배열 사용 — session.history 아님)
+  const greetContents = [
+    { role: 'user', parts: [{ text: GREETING_PROMPT }] },
+  ];
+
+  try {
+    const stream = await generateWithAbort(
+      session.model, greetContents, controller.signal
+    );
+
+    for await (const chunk of stream.stream) {
+      if (controller.signal.aborted) break; // Stop sending if interrupted (중단 시 전송 중지)
+      const text = textFromChunk(chunk);
+      if (text) sendChunk(ws, 0, text, false);
+    }
+
+    if (!controller.signal.aborted) {
+      sendChunk(ws, 0, '', true); // Final frame — closes the utterance (최종 프레임 — 발화 완료)
+    }
+
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      console.log(`[WS] [${session.agentId}] Greeting aborted (인사말 중단)`);
+    } else {
+      console.error(`[WS] [${session.agentId}] Greeting error (인사말 오류):`, err);
+      // Send static fallback so Retell isn't left waiting (Retell이 기다리지 않도록 정적 폴백 전송)
+      sendChunk(ws, 0, "Hello! I'm your voice assistant. How can I help you today?", true);
+    }
+  } finally {
+    session.isGenerating = false; // ALWAYS released — cannot be skipped (항상 해제 — 건너뛸 수 없음)
+  }
+}
+
 // ── Transcript Handler (Streaming) ────────────────────────────────────────────
 
 /**
- * Stream a response_required turn through Gemini and forward chunks to Retell in real time.
- * Handles the function-calling two-turn flow with full streaming on both turns.
- * Called exclusively through session.generationQueue so ChatSession calls are serialised.
- * (Gemini를 통해 response_required 턴을 스트리밍하고 청크를 Retell에 실시간 전달.
- *  두 턴의 함수 호출 흐름을 완전한 스트리밍으로 처리.
- *  ChatSession 호출 직렬화를 위해 session.generationQueue를 통해서만 호출)
+ * Stream a response_required turn through Gemini and forward every chunk to Retell.
+ *
+ * Three-pillar implementation:
+ *   1. Streaming  — generateContentStream() + per-chunk sendChunk(..., false),
+ *                   final sendChunk(..., true).
+ *   2. Barge-in   — signal.aborted checked before every sendChunk(); if true the loop
+ *                   breaks, history is rolled back, and the finally block fires.
+ *                   generateWithAbort() also rejects immediately when abort() is called,
+ *                   so even the initial await is unblocked without waiting for Gemini.
+ *   3. Freeze prevention — isGenerating set BEFORE the first await and reset in finally
+ *                   for every exit path: clean completion, abort, error, function-call chain.
+ *
+ * (스트리밍 + 끼어들기 + 동결 방지 3중 구현:
+ *  1. 스트리밍: generateContentStream() + 청크별 sendChunk(..., false) + 최종 true.
+ *  2. 끼어들기: 각 sendChunk 전 signal.aborted 확인, 히스토리 롤백, finally 즉시 실행.
+ *  3. 동결 방지: 첫 await 전 isGenerating 설정, 모든 종료 경로에서 finally로 해제)
  *
  * @param {import('ws').WebSocket} ws
- * @param {object} session    — live session state (라이브 세션 상태)
- * @param {Array}  transcript — full transcript array from Retell (Retell의 전체 transcript 배열)
- * @param {number} responseId — must be echoed in every outbound frame (모든 출력 프레임에 반환 필수)
+ * @param {object}      session     — live session state (라이브 세션 상태)
+ * @param {Array}       transcript  — Retell transcript array (Retell transcript 배열)
+ * @param {number}      responseId  — echoed in every outbound frame (모든 출력 프레임에 반환)
+ * @param {AbortSignal} signal      — abort signal for this generation (이번 생성의 abort 신호)
  */
-async function handleTranscript(ws, session, transcript, responseId) {
+async function handleTranscript(ws, session, transcript, responseId, signal) {
+  // ── Set lock BEFORE any await — MUST match the finally below ──────────
+  // (모든 await 전에 잠금 설정 — 아래 finally와 반드시 쌍을 이뤄야 함)
+  session.isGenerating = true;
+
   const lastUserTurn = transcript.filter((t) => t.role === 'user').at(-1);
   const userText     = lastUserTurn?.content?.trim() ?? '';
 
   if (!userText) {
-    // Empty transcript — nudge the caller (빈 transcript — 사용자에게 안내)
+    // Empty transcript — nudge the caller without touching history (빈 transcript — 히스토리 수정 없이 안내)
     sendChunk(ws, responseId, "I'm listening. How can I help you today?", true);
+    session.isGenerating = false;
     return;
   }
 
   console.log(
     `[WS] [${session.agentId}] User: "${userText.slice(0, 80)}${userText.length > 80 ? '…' : ''}" ` +
-    `(사용자 발화)`
+    `(사용자 발화) | response_id: ${responseId}`
   );
 
+  // Snapshot history length — used to roll back all writes if this turn is aborted or errors.
+  // Because generationQueue serialises calls, no other turn can write between checkpoint
+  // and rollback, so the truncation is always safe.
+  // (히스토리 길이 스냅샷 — 이 턴이 중단되거나 오류 발생 시 모든 쓰기 롤백.
+  //  generationQueue가 호출을 직렬화하므로 체크포인트와 롤백 사이에 다른 턴이 쓸 수 없음)
+  const historyCheckpoint = session.history.length;
+
+  // Add user turn to history BEFORE calling Gemini so the model sees it.
+  // Rolled back in catch/abort paths to keep history clean for future turns.
+  // (Gemini 호출 전 사용자 턴을 히스토리에 추가 — 모델이 볼 수 있도록.
+  //  미래 턴을 위해 히스토리를 깨끗하게 유지하도록 catch/abort 경로에서 롤백)
+  session.history.push({ role: 'user', parts: [{ text: userText }] });
+
   try {
-    // ── Turn 1: stream user utterance to Gemini ────────────────────────────
-    const turn1 = await session.chat.sendMessageStream(userText);
-    let turn1HasText = false;
+    // ── Turn 1: stream the user utterance to Gemini ────────────────────────
+    const turn1 = await generateWithAbort(session.model, session.history, signal);
+    let   turn1Text = '';
 
     for await (const chunk of turn1.stream) {
-      // Stale-generation check — exit if this response was superseded by barge-in or a new turn
-      // (추월 확인 — 끼어들기나 새 턴으로 추월된 경우 종료)
-      if (session.activeResponseId !== responseId) return;
-
+      if (signal.aborted) break; // Barge-in guard — stop sending stale chunks (끼어들기 보호 — 오래된 청크 전송 중지)
       const text = textFromChunk(chunk);
       if (text) {
-        turn1HasText = true;
-        sendChunk(ws, responseId, text, false); // Partial — more chunks coming (부분 청크 — 추가 청크 예정)
+        turn1Text += text;
+        sendChunk(ws, responseId, text, false); // Partial chunk — TTS starts immediately (부분 청크 — TTS 즉시 시작)
       }
     }
 
-    // Await the aggregated response to inspect for a function call
-    // (집계된 응답을 기다려 함수 호출 확인)
+    if (signal.aborted) {
+      session.history.length = historyCheckpoint; // Rollback user turn (사용자 턴 롤백)
+      return;
+    }
+
+    // Await the aggregated response to check for a function call.
+    // The stream is already complete at this point — this is a resolved promise.
+    // (함수 호출 확인을 위해 집계된 응답 대기.
+    //  스트림이 이미 완료된 시점 — 이미 resolved된 promise)
     const turn1Response = await turn1.response;
-    if (session.activeResponseId !== responseId) return;
+
+    if (signal.aborted) {
+      session.history.length = historyCheckpoint;
+      return;
+    }
 
     const turn1Parts = turn1Response.candidates?.[0]?.content?.parts ?? [];
     const fnPart     = turn1Parts.find((p) => p.functionCall != null);
 
+    // ── Pure text response — commit history and close the utterance ────────
     if (!fnPart) {
-      // Pure text turn — send the final completion frame
-      // If no chunks had text (edge case), fall back to the aggregated response text
-      // (순수 텍스트 턴 — 최종 완료 프레임 전송.
-      //  청크에 텍스트가 없는 경우 집계된 응답 텍스트로 폴백)
-      const fallback = turn1HasText ? '' : (turn1Parts.find((p) => p.text)?.text ?? '');
-      sendChunk(ws, responseId, fallback, true);
+      session.history.push({ role: 'model', parts: [{ text: turn1Text }] });
+      sendChunk(ws, responseId, '', true); // Final frame — signals TTS completion (최종 프레임 — TTS 완료 신호)
       return;
     }
 
     // ── Function call detected ─────────────────────────────────────────────
     const { name: fnName, args: fnArgs } = fnPart.functionCall;
-
     console.log(
       `[WS] [${session.agentId}] Function call: "${fnName}" | args: ${JSON.stringify(fnArgs)} ` +
       `(함수 호출: "${fnName}")`
     );
 
-    const fnResponse = await executeFunctionCall(fnName, fnArgs, session);
-    if (session.activeResponseId !== responseId) return;
+    // Commit the model's function-call turn to history (모델의 함수 호출 턴을 히스토리에 커밋)
+    session.history.push({ role: 'model', parts: [{ functionCall: { name: fnName, args: fnArgs } }] });
 
-    // ── Turn 2: stream function result back into Gemini ────────────────────
-    const turn2 = await session.chat.sendMessageStream([
-      { functionResponse: { name: fnName, response: fnResponse } },
-    ]);
-    let turn2HasText = false;
+    const fnResponse = await executeFunctionCall(fnName, fnArgs, session);
+
+    if (signal.aborted) {
+      session.history.length = historyCheckpoint; // Rollback user + model turns (사용자 + 모델 턴 롤백)
+      return;
+    }
+
+    // Add function result as a user-role turn — required by Gemini's multi-turn protocol
+    // (함수 결과를 사용자 역할 턴으로 추가 — Gemini 멀티턴 프로토콜 요구사항)
+    session.history.push({
+      role:  'user',
+      parts: [{ functionResponse: { name: fnName, response: fnResponse } }],
+    });
+
+    // ── Turn 2: stream Gemini's function-informed reply ────────────────────
+    const turn2 = await generateWithAbort(session.model, session.history, signal);
+    let   turn2Text = '';
 
     for await (const chunk of turn2.stream) {
-      if (session.activeResponseId !== responseId) return;
-
+      if (signal.aborted) break;
       const text = textFromChunk(chunk);
       if (text) {
-        turn2HasText = true;
+        turn2Text += text;
         sendChunk(ws, responseId, text, false);
       }
     }
 
-    const turn2Response = await turn2.response;
-    if (session.activeResponseId !== responseId) return;
+    if (signal.aborted) {
+      session.history.length = historyCheckpoint; // Rollback all (전체 롤백)
+      return;
+    }
 
-    const turn2Fallback = turn2HasText
-      ? ''
-      : (turn2Response.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text ?? '');
+    // Commit model's reply and close the utterance (모델 응답 커밋 및 발화 완료)
+    session.history.push({ role: 'model', parts: [{ text: turn2Text }] });
+    sendChunk(ws, responseId, '', true);
 
-    sendChunk(ws, responseId, turn2Fallback, true); // Final completion frame (최종 완료 프레임)
-
-    console.log(`[WS] [${session.agentId}] Function turn complete (함수 턴 완료) | response_id: ${responseId}`);
+    console.log(
+      `[WS] [${session.agentId}] Turn complete | fn: "${fnName}" | response_id: ${responseId} ` +
+      `(턴 완료 | 함수: "${fnName}")`
+    );
 
   } catch (err) {
-    console.error(`[WS] [${session.agentId}] Streaming error (스트리밍 오류):`, err);
-    // Only send fallback if this generation is still active — avoids clobbering a newer response
-    // (이 생성이 여전히 활성인 경우에만 폴백 전송 — 더 새로운 응답 덮어쓰기 방지)
-    if (session.activeResponseId === responseId) {
-      sendChunk(ws, responseId, "I'm sorry, I had a little trouble. Could you please say that again?", true);
+    // Always rollback history so future turns start from a clean state
+    // (항상 히스토리 롤백 — 미래 턴이 깨끗한 상태에서 시작)
+    session.history.length = historyCheckpoint;
+
+    if (err.name === 'AbortError') {
+      // Barge-in or timeout — expected, not an error (끼어들기 또는 타임아웃 — 예상된 상황, 오류 아님)
+      console.log(
+        `[WS] [${session.agentId}] Generation aborted (생성 중단) | response_id: ${responseId} | reason: ${err.message}`
+      );
+    } else {
+      console.error(`[WS] [${session.agentId}] Streaming error (스트리밍 오류):`, err);
+      // Only send fallback if the socket is still open and not mid-barge-in
+      // (소켓이 열려 있고 끼어들기 중이 아닌 경우에만 폴백 전송)
+      if (!signal.aborted && ws.readyState === ws.OPEN) {
+        sendChunk(ws, responseId, "I'm sorry, I had a little trouble. Could you please say that again?", true);
+      }
     }
+
+  } finally {
+    // ── PILLAR 3: Absolute Freeze Prevention ──────────────────────────────
+    // This block executes for EVERY exit path:
+    //   ✓ Clean text response         ✓ Clean function-call chain
+    //   ✓ AbortError (barge-in)       ✓ Network / Gemini API error
+    //   ✓ Timeout                     ✓ Empty transcript early return
+    // The generationQueue's next .then() will not run until this resolves,
+    // so resetting isGenerating here guarantees the queue always advances.
+    // (이 블록은 모든 종료 경로에서 실행됨:
+    //  모든 정상 경로, AbortError, 네트워크/Gemini 오류, 타임아웃.
+    //  generationQueue의 다음 .then()은 이것이 resolved될 때까지 실행되지 않음.
+    //  isGenerating 재설정으로 큐가 항상 진행됨을 보장)
+    session.isGenerating = false;
   }
+}
+
+// ── generateWithAbort ─────────────────────────────────────────────────────────
+
+/**
+ * Wrap model.generateContentStream() with an AbortController and timeout.
+ *
+ * Why this is necessary:
+ *   model.generateContentStream() returns a Promise. If Gemini is slow (network stall,
+ *   cold start, rate limiting), this await can block for many seconds. Without a way to
+ *   reject it early, the generationQueue deadlocks: new response_required events pile up,
+ *   session.isGenerating stays true, and the voice agent freezes completely.
+ *
+ *   This function races the Gemini call against two rejection sources:
+ *     a) abort()   — fired by the message handler on barge-in or new response_required.
+ *                    The abort event listener rejects synchronously, so the await in
+ *                    handleTranscript resolves (to a rejection) in the same JS tick.
+ *     b) timeout   — a 15-second safety net for network failures or Gemini cold starts.
+ *
+ *   When either fires, handleTranscript's catch block runs, history is rolled back,
+ *   and the finally block resets isGenerating — the queue advances.
+ *
+ *   Note: calling abort() does NOT cancel the underlying HTTP request to Gemini
+ *   (the SDK does not support AbortSignal natively). The request runs to completion
+ *   in the background, but its result is discarded because we manage history manually
+ *   and only commit after a non-aborted generation.
+ *
+ * (왜 필요한가: model.generateContentStream()이 느린 경우 await가 수 초간 블록.
+ *  이 함수는 Gemini 호출을 두 가지 거절 소스에 대해 경쟁:
+ *  a) abort() — 끼어들기나 새 response_required 시 메시지 핸들러가 즉시 호출.
+ *  b) 타임아웃 — 네트워크 장애나 Gemini 콜드 스타트에 대한 15초 안전망.
+ *  어느 쪽이 먼저 발생해도 catch 블록 실행, 히스토리 롤백, finally로 잠금 해제.)
+ *
+ * @param {import('@google/generative-ai').GenerativeModel} model
+ * @param {Array}       contents    — full history to send (전송할 전체 히스토리)
+ * @param {AbortSignal} signal      — abort signal for this generation (이번 생성의 abort 신호)
+ * @param {number}      [timeoutMs] — max wait for Gemini to start streaming (스트리밍 시작 대기 최대 시간)
+ * @returns {Promise<import('@google/generative-ai').GenerateContentStreamResult>}
+ * @throws  {Error} with name 'AbortError' if aborted or timed out (중단 또는 타임아웃 시 AbortError)
+ */
+function generateWithAbort(model, contents, signal, timeoutMs = GEMINI_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    // Reject immediately if already aborted before the call (호출 전에 이미 중단된 경우 즉시 거절)
+    if (signal.aborted) {
+      reject(makeAbortError('Aborted before Gemini call (Gemini 호출 전 이미 중단됨)'));
+      return;
+    }
+
+    // Safety-net timeout — rejects if Gemini hasn't responded within GEMINI_TIMEOUT_MS
+    // (안전망 타임아웃 — GEMINI_TIMEOUT_MS 내에 Gemini가 응답하지 않으면 거절)
+    const timer = setTimeout(() => {
+      reject(makeAbortError(`Gemini request timed out after ${timeoutMs}ms (Gemini 요청 ${timeoutMs}ms 후 타임아웃)`));
+    }, timeoutMs);
+
+    // Abort listener — fires synchronously when abort() is called on the signal.
+    // This rejects the promise in the same JS tick as abort(), giving instant unblock.
+    // (Abort 리스너 — 신호에서 abort() 호출 시 동기적으로 발생.
+    //  abort()와 동일한 JS 틱에서 promise를 거절 — 즉각적인 차단 해제)
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(makeAbortError('Aborted during Gemini call (Gemini 호출 중 중단됨)'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    // Issue the actual Gemini streaming request (실제 Gemini 스트리밍 요청 발행)
+    model.generateContentStream({ contents })
+      .then((result) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      });
+  });
+}
+
+/** Create an Error with name='AbortError' for consistent catch-block detection. (AbortError 이름의 Error 생성) */
+function makeAbortError(message) {
+  return Object.assign(new Error(message), { name: 'AbortError' });
 }
 
 // ── Function Call Executor ────────────────────────────────────────────────────
 
 /**
- * Execute a Gemini function call and return the result payload to inject back into the chat.
- * (Gemini 함수 호출 실행 후 채팅에 다시 주입할 결과 페이로드 반환)
+ * Execute a Gemini-requested function call and return the result payload.
+ * The payload is injected back into the conversation as a functionResponse part.
+ * (Gemini가 요청한 함수 호출을 실행하고 결과 페이로드 반환.
+ *  페이로드는 functionResponse 파트로 대화에 다시 주입됨)
  *
  * @param {string} fnName
  * @param {object} fnArgs
@@ -363,8 +652,8 @@ async function handleTranscript(ws, session, transcript, responseId) {
 async function executeFunctionCall(fnName, fnArgs, session) {
   // ── get_menu ────────────────────────────────────────────────────────────────
   if (fnName === 'get_menu') {
-    // Use pre-fetched menu_cache — avoids a live POS round-trip per call
-    // (사전 조회된 menu_cache 사용 — 통화마다 라이브 POS 왕복 방지)
+    // Use the pre-fetched menu_cache from storeData — avoids a live POS round-trip per call
+    // (사전 조회된 storeData의 menu_cache 사용 — 통화마다 라이브 POS 왕복 방지)
     const menuContent = session.storeData.menu_cache ?? 'Menu information is currently unavailable.';
     return { menu: menuContent };
   }
@@ -377,8 +666,8 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       storeContext
     );
 
-    // Fire-and-forget — worker handles POS + payment asynchronously
-    // (fire-and-forget — 워커가 POS + 결제 비동기 처리)
+    // Fire-and-forget — the queue worker handles POS submission and payment asynchronously
+    // (fire-and-forget — 큐 워커가 POS 제출과 결제를 비동기적으로 처리)
     enqueueOrder(orderData, storeContext).catch((err) => {
       console.error(
         `[WS] [${session.agentId}] Enqueue failed for order ${orderData.orderId}: ${err.message} ` +
@@ -394,9 +683,9 @@ async function executeFunctionCall(fnName, fnArgs, session) {
     };
   }
 
-  // Unknown function — return neutral payload so Gemini can recover
-  // (알 수 없는 함수 — Gemini가 복구할 수 있도록 중립 페이로드 반환)
-  console.warn(`[WS] Unknown function: "${fnName}" (알 수 없는 함수 호출: "${fnName}")`);
+  // Unknown function — return a neutral payload so Gemini can gracefully recover
+  // (알 수 없는 함수 — Gemini가 정상 복구할 수 있도록 중립 페이로드 반환)
+  console.warn(`[WS] Unknown function call: "${fnName}" (알 수 없는 함수 호출: "${fnName}")`);
   return { error: `Function "${fnName}" is not implemented.` };
 }
 
@@ -419,7 +708,8 @@ async function fetchStoreData(agentId) {
     return getMockStoreData(agentId);
   }
 
-  // Debug: confirm the Supabase URL is present (디버그: Supabase URL 존재 확인)
+  // Debug: confirm the Supabase URL is present before making the request
+  // (요청 전 Supabase URL 존재 확인 디버그 로그)
   console.log('[DB Debug] Connecting to Supabase URL:', process.env.SUPABASE_URL ? 'Loaded' : 'MISSING!');
 
   const { data, error } = await supabase
@@ -435,10 +725,10 @@ async function fetchStoreData(agentId) {
     return null;
   }
 
-  // Strict boolean check — is_active === false rejects; NULL passes through
-  // (엄격한 불리언 확인 — is_active가 false면 거절; NULL은 통과)
+  // Strict boolean check — is_active === false rejects; NULL or true passes through
+  // (엄격한 불리언 확인 — is_active가 false면 거절; NULL 또는 true는 통과)
   if (data.is_active === false) {
-    console.warn(`[WS] Agent ${agentId} is inactive — rejecting (에이전트 비활성 — 거절)`);
+    console.warn(`[WS] Agent ${agentId} is inactive — rejecting connection (에이전트 비활성 — 연결 거절)`);
     return null;
   }
 
@@ -457,10 +747,10 @@ async function fetchStoreData(agentId) {
 function buildMasterPrompt(storeData) {
   const sections = [
     storeData.system_prompt,
-    storeData.business_hours  && `Business Hours:\n${storeData.business_hours}`,
-    storeData.parking_info    && `Parking & Directions:\n${storeData.parking_info}`,
+    storeData.business_hours   && `Business Hours:\n${storeData.business_hours}`,
+    storeData.parking_info     && `Parking & Directions:\n${storeData.parking_info}`,
     storeData.custom_knowledge && `Additional Information:\n${storeData.custom_knowledge}`,
-    storeData.menu_cache      && `Current Menu:\n${storeData.menu_cache}`,
+    storeData.menu_cache       && `Current Menu:\n${storeData.menu_cache}`,
   ].filter(Boolean);
 
   if (sections.length === 0) {
@@ -477,9 +767,9 @@ function buildMasterPrompt(storeData) {
 
 /**
  * Safely extract plain text from a streaming Gemini chunk.
- * Filters out function-call parts so text() is never called on a non-text response.
+ * Filters out function-call parts so we never call .text on a non-text response.
  * (스트리밍 Gemini 청크에서 일반 텍스트 안전 추출.
- *  함수 호출 파트를 필터링하여 비텍스트 응답에서 text() 호출 방지)
+ *  비텍스트 응답에서 .text 호출을 방지하도록 함수 호출 파트 필터링)
  *
  * @param {import('@google/generative-ai').GenerateContentResponse} chunk
  * @returns {string}
@@ -492,19 +782,19 @@ function textFromChunk(chunk) {
 }
 
 /**
- * Send a Retell-protocol frame over the WebSocket.
- * contentComplete=false → partial streaming chunk.
- * contentComplete=true  → final frame; signals the utterance is complete.
- * No-ops when the socket is not OPEN.
- * (WebSocket을 통해 Retell 프로토콜 프레임 전송.
- *  contentComplete=false → 부분 스트리밍 청크.
- *  contentComplete=true  → 최종 프레임; 발화 완료 신호.
- *  소켓이 OPEN 상태가 아니면 아무것도 하지 않음)
+ * Send a Retell-protocol streaming frame over the WebSocket.
+ * contentComplete=false → partial chunk; Retell's TTS engine starts speaking immediately.
+ * contentComplete=true  → final frame; signals the complete utterance to Retell.
+ * No-ops silently if the socket is not OPEN — safe to call after barge-in.
+ * (WebSocket을 통해 Retell 프로토콜 스트리밍 프레임 전송.
+ *  contentComplete=false → 부분 청크; Retell TTS 엔진이 즉시 말하기 시작.
+ *  contentComplete=true → 최종 프레임; 완전한 발화 신호.
+ *  소켓이 OPEN이 아니면 조용히 무시 — 끼어들기 후 안전하게 호출 가능)
  *
  * @param {import('ws').WebSocket} ws
  * @param {number}  responseId      — echoed from response_required (response_required에서 반환)
  * @param {string}  content         — text for Retell TTS (Retell TTS용 텍스트)
- * @param {boolean} contentComplete — true signals stream end (true는 스트림 종료 신호)
+ * @param {boolean} contentComplete — true signals utterance end (true는 발화 종료 신호)
  * @param {boolean} [endCall]       — true instructs Retell to hang up (true이면 Retell에 전화 종료 지시)
  */
 function sendChunk(ws, responseId, content, contentComplete, endCall = false) {

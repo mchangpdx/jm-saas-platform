@@ -1,7 +1,7 @@
 /**
- * LlmService — Gemini 1.5 Flash integration for voice order processing.
+ * LlmService — Gemini 2.5 Flash integration for voice order processing.
  * Uses Gemini's native function calling to extract structured order intents from conversation.
- * (Gemini 1.5 Flash 음성 주문 처리 서비스 — 함수 호출로 대화에서 구조화된 주문 의도 추출)
+ * (Gemini 2.5 Flash 음성 주문 처리 서비스 — 함수 호출로 대화에서 구조화된 주문 의도 추출)
  *
  * Flow:
  *   conversationHistory → generateResponse() → LlmResult
@@ -31,7 +31,7 @@ const _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Tools are declared once here and passed to every model instance.
 // (Gemini는 대화 맥락에 따라 호출할 도구 결정. 도구는 여기서 한 번 선언 후 모든 모델 인스턴스에 전달)
 
-const POS_TOOLS = [
+export const POS_TOOLS = [
   {
     functionDeclarations: [
 
@@ -337,21 +337,17 @@ export class LlmError extends Error {
 // Singleton export — one LlmService instance per process (프로세스당 하나의 LlmService 인스턴스)
 export const llmService = new LlmService();
 
-// ── Stateful Chat Session Factory ─────────────────────────────────────────────
+// ── Stateful Chat Session Factory (legacy — kept for backward compatibility) ──
 
 /**
  * Create a persistent Gemini chat session for a long-lived WebSocket connection.
+ * NOTE: Prefer createGenerationModel() for new WebSocket connections — it gives full
+ * control over history management, abort signals, and freeze prevention.
+ * (장기 WebSocket 연결용 영구 Gemini 채팅 세션 생성.
+ *  신규 WebSocket 연결에는 createGenerationModel() 사용 권장 — 히스토리 관리, abort 신호,
+ *  동결 방지에 대한 완전한 제어 제공)
  *
- * Difference from generateResponse() — which is stateless (caller passes full history each
- * time) — this returns a live ChatSession whose context Gemini accumulates internally.
- * Call chat.sendMessage() for each turn; the model remembers all prior turns automatically.
- *
- * (장기 WebSocket 연결을 위한 영구적인 Gemini 채팅 세션 생성.
- *  무상태인 generateResponse()와 달리, 반환된 ChatSession은 Gemini가 내부적으로
- *  컨텍스트를 누적. 매 턴마다 chat.sendMessage()를 호출하면 모델이 이전 턴을 자동으로 기억)
- *
- * @param {string} systemPrompt — Master prompt assembled from storeData for this connection
- *                                (이 연결의 storeData로 조립된 마스터 프롬프트)
+ * @param {string} systemPrompt
  * @returns {import('@google/generative-ai').ChatSession}
  */
 export function createChatSession(systemPrompt) {
@@ -360,8 +356,38 @@ export function createChatSession(systemPrompt) {
     tools:             POS_TOOLS,
     systemInstruction: { parts: [{ text: systemPrompt }] },
   });
-
-  // Empty history on start — Gemini accumulates turns internally as sendMessage() is called
-  // (빈 히스토리로 시작 — sendMessage() 호출 시 Gemini가 내부적으로 턴 누적)
   return model.startChat({ history: [] });
+}
+
+// ── Streaming Model Factory ───────────────────────────────────────────────────
+
+/**
+ * Create a pre-configured GenerativeModel for a WebSocket session.
+ *
+ * Unlike createChatSession() — which returns a stateful ChatSession that manages
+ * history internally — this returns the raw model so the caller manages history
+ * as a plain array. Use with model.generateContentStream({ contents: history })
+ * for full control over abort signals, timeouts, and history rollback on barge-in.
+ *
+ * This is the correct primitive for freeze-free, interruptible voice streaming:
+ *   - Each call is an independent HTTP request — no shared SDK state to corrupt.
+ *   - History is committed only after a clean (non-aborted) generation completes.
+ *   - An AbortController can reject the pending await before any history is written.
+ *
+ * (WebSocket 세션을 위한 사전 설정된 GenerativeModel 생성.
+ *  내부적으로 히스토리를 관리하는 stateful ChatSession을 반환하는 createChatSession()과 달리,
+ *  호출자가 히스토리를 일반 배열로 직접 관리하도록 원시 모델 반환.
+ *  abort 신호, 타임아웃, 끼어들기 시 히스토리 롤백을 완전히 제어 가능.
+ *  각 호출은 독립적인 HTTP 요청 — 공유 SDK 상태 손상 없음.
+ *  히스토리는 정상(비중단) 생성 완료 후에만 커밋됨)
+ *
+ * @param {string} systemPrompt — Master prompt assembled from storeData (storeData로 조립된 마스터 프롬프트)
+ * @returns {import('@google/generative-ai').GenerativeModel}
+ */
+export function createGenerationModel(systemPrompt) {
+  return _client.getGenerativeModel({
+    model:             GEMINI_MODEL,
+    tools:             POS_TOOLS,
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+  });
 }
