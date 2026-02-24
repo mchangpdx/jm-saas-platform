@@ -131,13 +131,18 @@ export function setupWebSocket(httpServer) {
     const masterPrompt = buildMasterPrompt(storeData);
     const chat         = createChatSession(masterPrompt);
 
-    // Immutable session object — captured in the message/close/error closures below
-    // (불변 세션 객체 — 아래 message/close/error 클로저에서 캡처)
+    // Per-connection session state — captured in all closures below
+    // isGenerating serialises Gemini calls: ChatSession is NOT safe for concurrent sendMessage()
+    // calls — a second overlapping call corrupts the internal history and causes silent failures.
+    // (연결별 세션 상태 — 아래 모든 클로저에서 캡처.
+    //  isGenerating은 Gemini 호출을 직렬화: ChatSession은 동시 sendMessage() 호출에 안전하지 않음 —
+    //  두 번째 겹치는 호출이 내부 히스토리를 손상시키고 무음 실패를 유발)
     const session = {
       agentId,
       callId,
       storeData,
       chat,
+      isGenerating: false, // Concurrency lock — reset in finally after every Gemini turn (동시성 락 — 모든 Gemini 턴 후 finally에서 초기화)
     };
 
     console.log(
@@ -240,6 +245,17 @@ export function setupWebSocket(httpServer) {
  * @param {number} responseId — Retell's response_id; must be included in the reply frame (응답 프레임에 포함해야 하는 Retell의 response_id)
  */
 async function handleTranscript(ws, session, transcript, responseId) {
+  // Concurrency guard — drop the turn if a prior Gemini call is still in flight.
+  // Retell can fire overlapping response_required events (e.g. reminder nudges); allowing two
+  // concurrent sendMessage() calls on the same ChatSession corrupts its history silently.
+  // (동시성 가드 — 이전 Gemini 호출이 진행 중이면 현재 턴을 드롭.
+  //  Retell은 겹치는 response_required 이벤트를 전송할 수 있음; 동일 ChatSession에서
+  //  두 sendMessage() 호출이 동시에 실행되면 히스토리가 무음으로 손상됨)
+  if (session.isGenerating) {
+    console.warn(`[WS] [${session.agentId}] Dropped overlapping turn (response_id ${responseId}) — generation in progress (중복 턴 드롭 — 생성 진행 중)`);
+    return;
+  }
+
   // Extract the last user utterance from the transcript array
   // (transcript 배열에서 마지막 사용자 발화 추출)
   const lastUserTurn = transcript.filter((t) => t.role === 'user').at(-1);
@@ -255,6 +271,10 @@ async function handleTranscript(ws, session, transcript, responseId) {
     `[WS] [${session.agentId}] User: "${userText.slice(0, 80)}${userText.length > 80 ? '…' : ''}" ` +
     `(사용자 발화: "${userText.slice(0, 80)}")`
   );
+
+  // Acquire lock before any await — released unconditionally in finally
+  // (await 전 락 획득 — finally에서 무조건 해제)
+  session.isGenerating = true;
 
   try {
     // ── Turn 1: send user text to Gemini (턴 1: 사용자 텍스트를 Gemini에 전송) ──
@@ -306,13 +326,17 @@ async function handleTranscript(ws, session, transcript, responseId) {
     sendResponse(ws, responseId, finalText);
 
   } catch (err) {
+    // Log the full error object — err.message alone hides SDK-level silent failures
+    // (전체 오류 객체 로깅 — err.message만으로는 SDK 수준의 무음 실패가 숨겨짐)
     console.error(
-      `[WS] [${session.agentId}] Error processing transcript: ${err.message} ` +
-      `(transcript 처리 오류: ${err.message})`
+      `[WS] [${session.agentId}] Error processing transcript (transcript 처리 오류):`, err
     );
-    // Send a graceful fallback — voice calls must not go silent
-    // (음성 통화는 무음이 되면 안 됨 — 우아한 폴백 전송)
     sendResponse(ws, responseId, "I'm sorry, I had a little trouble. Could you please say that again?");
+
+  } finally {
+    // Always release the lock — even when an exception escapes the catch above
+    // (예외가 catch를 벗어나는 경우에도 항상 락 해제)
+    session.isGenerating = false;
   }
 }
 
