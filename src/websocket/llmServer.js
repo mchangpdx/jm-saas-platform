@@ -389,6 +389,10 @@ async function fetchStoreData(agentId) {
     return getMockStoreData(agentId);
   }
 
+  // Debug: confirm the Supabase URL is present before attempting the network call
+  // (디버그: 네트워크 호출 전 Supabase URL 존재 여부 확인)
+  console.log('[DB Debug] Connecting to Supabase URL:', process.env.SUPABASE_URL ? 'Loaded' : 'MISSING!');
+
   // Production: query the agents table including all knowledge fields added in Step 8
   // (운영: Step 8에서 추가된 모든 지식 필드를 포함하여 agents 테이블 조회)
   const { data, error } = await supabase
@@ -403,6 +407,7 @@ async function fetchStoreData(agentId) {
   if (error) {
     if (error.code === 'PGRST116') return null; // Row not found (행 없음)
     console.error(`[WS] Supabase error fetching store data: ${error.message} (스토어 데이터 조회 Supabase 오류)`);
+    console.error('[WS] Supabase error detail:', error.cause || error); // Expose fetch/network root cause (fetch/네트워크 근본 원인 노출)
     return null;
   }
 
