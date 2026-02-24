@@ -673,16 +673,17 @@ async function executeFunctionCall(fnName, fnArgs, session) {
   if (fnName === 'place_order') {
     console.log(
       `[WS] [${session.agentId}] place_order | phone: ${fnArgs.customer_phone} | ` +
-      `items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
+      `email: ${fnArgs.customer_email} | items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
     );
 
     const { data, error } = await supabase
       .from('orders')
       .insert({
-        agent_id:       session.agentId,
-        store_id:       session.storeData.id,
+        store_id:       session.storeData.id,  // Primary store identifier from schema (스키마의 기본 매장 식별자)
+        agent_id:       session.agentId,        // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
         customer_phone: fnArgs.customer_phone,
-        items:          fnArgs.items,         // JSON array of { name, quantity } (항목 배열)
+        customer_email: fnArgs.customer_email,  // Email for order confirmation receipt (주문 확인 영수증 전송용 이메일)
+        items:          fnArgs.items,           // JSON array of { name, quantity } (항목 배열)
         status:         'pending',
         created_at:     new Date().toISOString(),
       })
@@ -714,15 +715,16 @@ async function executeFunctionCall(fnName, fnArgs, session) {
   if (fnName === 'make_reservation') {
     console.log(
       `[WS] [${session.agentId}] make_reservation | phone: ${fnArgs.customer_phone} | ` +
-      `${fnArgs.date} ${fnArgs.time} | party: ${fnArgs.party_size} (예약 접수 시도)`
+      `email: ${fnArgs.customer_email} | ${fnArgs.date} ${fnArgs.time} | party: ${fnArgs.party_size} (예약 접수 시도)`
     );
 
     const { data, error } = await supabase
       .from('reservations')
       .insert({
-        agent_id:         session.agentId,
-        store_id:         session.storeData.id,
+        store_id:         session.storeData.id,  // Primary store identifier from schema (스키마의 기본 매장 식별자)
+        agent_id:         session.agentId,        // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
         customer_phone:   fnArgs.customer_phone,
+        customer_email:   fnArgs.customer_email,  // Email for reservation confirmation receipt (예약 확인 영수증 전송용 이메일)
         reservation_date: fnArgs.date,
         reservation_time: fnArgs.time,
         party_size:       fnArgs.party_size,

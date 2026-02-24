@@ -70,6 +70,11 @@ export const POS_TOOLS = [
               description: 'Customer phone number used to identify and follow up on the order (주문 확인 및 후속 조치에 사용되는 고객 전화번호)',
             },
 
+            customer_email: {
+              type:        'string',
+              description: 'Customer email address for order confirmation receipt (주문 확인 영수증 전송을 위한 고객 이메일 주소)',
+            },
+
             items: {
               type:        'array',
               description: 'List of items the customer has confirmed they want to order (고객이 확인한 주문 항목 목록)',
@@ -90,7 +95,7 @@ export const POS_TOOLS = [
             },
 
           },
-          required: ['customer_phone', 'items'],
+          required: ['customer_phone', 'customer_email', 'items'],
         },
       },
 
@@ -101,8 +106,8 @@ export const POS_TOOLS = [
         name: 'make_reservation',
         description:
           'Makes a table reservation for the customer. ' +
-          'Collect date, time, party size, and phone number before calling this. ' +
-          '(테이블 예약 접수. 날짜, 시간, 인원, 전화번호를 수집한 후 호출)',
+          'Collect date, time, party size, phone number, and email before calling this. ' +
+          '(테이블 예약 접수. 날짜, 시간, 인원, 전화번호, 이메일을 수집한 후 호출)',
         parameters: {
           type: 'object',
           properties: {
@@ -110,6 +115,11 @@ export const POS_TOOLS = [
             customer_phone: {
               type:        'string',
               description: 'Customer phone number for reservation confirmation (예약 확인을 위한 고객 전화번호)',
+            },
+
+            customer_email: {
+              type:        'string',
+              description: 'Customer email address for reservation confirmation receipt (예약 확인 영수증 전송을 위한 고객 이메일 주소)',
             },
 
             date: {
@@ -128,7 +138,7 @@ export const POS_TOOLS = [
             },
 
           },
-          required: ['customer_phone', 'date', 'time', 'party_size'],
+          required: ['customer_phone', 'customer_email', 'date', 'time', 'party_size'],
         },
       },
 
