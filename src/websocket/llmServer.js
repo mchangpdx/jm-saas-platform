@@ -98,8 +98,7 @@ export function setupWebSocket(httpServer) {
     // Retell appends the call_id as the path segment after WS_PATH
     // (Retell은 WS_PATH 뒤에 call_id를 경로 세그먼트로 추가)
     const callId = searchParams.get('call_id')
-      ?? pathname.slice(WS_PATH.length).replace(/^\//, '')
-      || null;
+      ?? (pathname.slice(WS_PATH.length).replace(/^\//, '') || null);
 
     console.log(
       `[WS] New connection | agent: ${agentId ?? 'unknown'} | call: ${callId ?? 'unknown'} | ` +
