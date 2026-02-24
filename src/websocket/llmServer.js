@@ -673,17 +673,19 @@ async function executeFunctionCall(fnName, fnArgs, session) {
   if (fnName === 'place_order') {
     console.log(
       `[WS] [${session.agentId}] place_order | phone: ${fnArgs.customer_phone} | ` +
-      `email: ${fnArgs.customer_email} | items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
+      `email: ${fnArgs.customer_email} | total: ${fnArgs.total_amount} | ` +
+      `items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
     );
 
     const { data, error } = await supabase
       .from('orders')
       .insert({
-        store_id:       session.storeData.id,  // Primary store identifier from schema (스키마의 기본 매장 식별자)
-        agent_id:       session.agentId,        // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
+        store_id:       session.storeData.id,   // Primary store identifier from schema (스키마의 기본 매장 식별자)
+        agent_id:       session.agentId,         // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
         customer_phone: fnArgs.customer_phone,
-        customer_email: fnArgs.customer_email,  // Email for order confirmation receipt (주문 확인 영수증 전송용 이메일)
-        items:          fnArgs.items,           // JSON array of { name, quantity } (항목 배열)
+        customer_email: fnArgs.customer_email,   // Email for order confirmation receipt (주문 확인 영수증 전송용 이메일)
+        items:          fnArgs.items,            // JSON array of { name, quantity } — duplicates pre-merged by Gemini (Gemini가 사전 합산한 항목 배열)
+        total_amount:   fnArgs.total_amount,     // Calculated total from Gemini based on menu prices (메뉴 가격 기반 Gemini 계산 총액)
         status:         'pending',
         created_at:     new Date().toISOString(),
       })
@@ -848,14 +850,61 @@ async function fetchStoreData(agentId) {
 // ── Master Prompt Builder ─────────────────────────────────────────────────────
 
 /**
- * Assemble the Master Prompt by concatenating all store knowledge fields.
- * (모든 스토어 지식 필드를 연결하여 마스터 프롬프트 조립)
+ * Assemble the Master Prompt from store knowledge fields plus two injected system blocks.
  *
- * @param {object} storeData
+ * Structure (always in this order):
+ *   1. DATE CONTEXT   — current date/time in the store's timezone so Gemini never
+ *                       hallucinates relative dates ("tomorrow", "next Wednesday").
+ *   2. STORE PERSONA  — system_prompt + business_hours + parking_info +
+ *                       custom_knowledge + menu_cache from storeData.
+ *                       Falls back to a generic assistant persona if all are empty.
+ *   3. ORDER RULES    — item-grouping and total_amount calculation instructions
+ *                       appended last so they override any conflicting persona text.
+ *
+ * (마스터 프롬프트 구성:
+ *  1. 날짜 컨텍스트 — 매장 시간대의 현재 날짜/시간 주입 — Gemini의 상대적 날짜 환각 방지.
+ *  2. 매장 페르소나 — system_prompt, 영업시간, 주차, 지식, 메뉴 캐시 순서로 조립.
+ *  3. 주문 규칙 — 항목 그룹화와 total_amount 계산 지시문 — 가장 마지막에 추가하여 우선 적용)
+ *
+ * @param {object} storeData — full store row from Supabase or mock (Supabase 또는 목에서 가져온 전체 스토어 행)
  * @returns {string}
  */
 function buildMasterPrompt(storeData) {
-  const sections = [
+  const timezone = storeData.timezone ?? 'America/Los_Angeles';
+
+  // Generate the current date/time in the store's local timezone at session-start time.
+  // Using a long-form locale string so Gemini can parse both full date and time unambiguously.
+  // (세션 시작 시점의 매장 현지 시간대 날짜/시간 생성.
+  //  Gemini가 날짜와 시간을 명확히 파싱할 수 있도록 긴 형식의 로케일 문자열 사용)
+  const localDateTimeStr = new Date().toLocaleString('en-US', {
+    timeZone: timezone,
+    weekday:  'long',
+    year:     'numeric',
+    month:    'long',
+    day:      'numeric',
+    hour:     '2-digit',
+    minute:   '2-digit',
+    hour12:   true,
+  });
+
+  // Date context block — always prepended first so every downstream instruction can rely on it.
+  // (날짜 컨텍스트 블록 — 항상 첫 번째로 추가하여 이후 모든 지시문이 이를 참조할 수 있도록 함)
+  const dateContextBlock =
+    `SYSTEM INFO: Today's date and time is ${localDateTimeStr}. ` +
+    `Use this absolute date to calculate any relative times (e.g., "tomorrow", "next Wednesday") ` +
+    `requested by the user.`;
+
+  // Order rules block — always appended last so it takes precedence over persona instructions.
+  // (주문 규칙 블록 — 항상 마지막에 추가하여 페르소나 지시문보다 우선 적용)
+  const orderRulesBlock =
+    `Order Instructions: When the user orders, group identical items ` +
+    `(e.g., if they order 1 Latte and then another 1 Latte, merge it to 2 Lattes). ` +
+    `You MUST calculate the total_amount based on the menu prices. ` +
+    `Speak the final order summary and the total amount to the user before calling the place_order tool.`;
+
+  // Collect optional store-specific sections — falsy values are filtered out.
+  // (선택적 매장별 섹션 수집 — falsy 값은 필터링)
+  const storeSpecificSections = [
     storeData.system_prompt,
     storeData.business_hours   && `Business Hours:\n${storeData.business_hours}`,
     storeData.parking_info     && `Parking & Directions:\n${storeData.parking_info}`,
@@ -863,14 +912,14 @@ function buildMasterPrompt(storeData) {
     storeData.menu_cache       && `Current Menu:\n${storeData.menu_cache}`,
   ].filter(Boolean);
 
-  if (sections.length === 0) {
-    return (
-      `You are a helpful voice ordering assistant for ${storeData.store_name ?? 'this store'}. ` +
-      `Help customers browse the menu and place orders clearly and efficiently.`
-    );
-  }
+  // Fall back to a generic persona if the store has no configured content.
+  // (매장에 설정된 콘텐츠가 없는 경우 일반 페르소나로 폴백)
+  const personaBlock = storeSpecificSections.length > 0
+    ? storeSpecificSections.join('\n\n')
+    : `You are a helpful voice ordering assistant for ${storeData.store_name ?? 'this store'}. ` +
+      `Help customers browse the menu and place orders clearly and efficiently.`;
 
-  return sections.join('\n\n');
+  return [dateContextBlock, personaBlock, orderRulesBlock].join('\n\n');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

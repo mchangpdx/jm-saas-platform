@@ -77,7 +77,7 @@ export const POS_TOOLS = [
 
             items: {
               type:        'array',
-              description: 'List of items the customer has confirmed they want to order (고객이 확인한 주문 항목 목록)',
+              description: 'List of items the customer has confirmed they want to order — merge duplicates before calling (고객이 확인한 주문 항목 목록 — 호출 전 중복 항목 합산)',
               items: {
                 type: 'object',
                 properties: {
@@ -87,15 +87,20 @@ export const POS_TOOLS = [
                   },
                   quantity: {
                     type:        'integer',
-                    description: 'Number of units — must be ≥ 1 (주문 수량 — 최소 1 이상)',
+                    description: 'Number of units — must be ≥ 1, duplicates merged (주문 수량 — 최소 1 이상, 중복 합산)',
                   },
                 },
                 required: ['name', 'quantity'],
               },
             },
 
+            total_amount: {
+              type:        'number',
+              description: 'The calculated total amount of the order based on menu prices — you MUST compute this before calling (메뉴 가격 기반 계산된 주문 총액 — 호출 전 반드시 계산 필요)',
+            },
+
           },
-          required: ['customer_phone', 'customer_email', 'items'],
+          required: ['customer_phone', 'customer_email', 'items', 'total_amount'],
         },
       },
 
