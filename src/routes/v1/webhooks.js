@@ -21,6 +21,22 @@ export const webhooksRouter = Router();
  */
 webhooksRouter.post('/retell', tenantMiddleware, handleRetellWebhook);
 
+/**
+ * POST /api/v1/webhooks/payment
+ *
+ * STUB: receive payment success/failure events from the Maverick PG.
+ * Responds 200 immediately and logs the raw payload for inspection.
+ * Replace the stub body with real order-status updates in production.
+ * (스텁: Maverick PG에서 결제 성공/실패 이벤트 수신.
+ *  즉시 200 응답 후 원시 페이로드 로깅.
+ *  프로덕션에서 실제 주문 상태 업데이트 로직으로 교체)
+ */
+webhooksRouter.post('/payment', (req, res) => {
+  // Log the full payload for debugging and future integration work (디버깅 및 향후 연동 작업을 위해 전체 페이로드 로깅)
+  console.log('[Webhook] Payment event received (결제 이벤트 수신):', JSON.stringify(req.body, null, 2));
+  res.status(200).json({ received: true });
+});
+
 // Future webhook endpoints can be added here without touching v1/index.js
 // (향후 웹훅 엔드포인트는 v1/index.js 수정 없이 여기에 추가)
 // webhooksRouter.post('/square',  tenantMiddleware, handleSquareWebhook);

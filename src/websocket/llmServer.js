@@ -65,6 +65,8 @@
 import { WebSocketServer }      from 'ws';
 import { supabase }             from '../config/supabase.js';
 import { createGenerationModel } from '../services/llm/gemini.js';
+import { createPaymentLink }    from '../services/payment/maverickPg.js';
+import { sendPaymentLink }      from '../services/notification/notifier.js';
 
 // WebSocket path — must match the path configured in Retell's agent dashboard
 // (WebSocket 경로 — Retell 에이전트 대시보드에 설정된 경로와 일치해야 함)
@@ -666,10 +668,10 @@ async function executeFunctionCall(fnName, fnArgs, session) {
   }
 
   // ── place_order (ACTIVE) ───────────────────────────────────────────────────
-  // Insert a confirmed order row into the orders table.
-  // Returns success with order_id, or a failure message Gemini can voice to the caller.
-  // (확정된 주문을 orders 테이블에 삽입.
-  //  성공 시 order_id 반환, 실패 시 Gemini가 고객에게 안내할 실패 메시지 반환)
+  // Insert a confirmed order row, generate a payment link, and notify the customer.
+  // Pipeline: DB insert → createPaymentLink → sendPaymentLink → return result to Gemini.
+  // (확정된 주문 삽입 → 결제 링크 생성 → 고객 알림 → Gemini에 결과 반환.
+  //  각 단계 실패 시 Gemini가 고객에게 안내할 실패 메시지 반환)
   if (fnName === 'place_order') {
     console.log(
       `[WS] [${session.agentId}] place_order | phone: ${fnArgs.customer_phone} | ` +
@@ -677,13 +679,14 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       `items: ${JSON.stringify(fnArgs.items)} (주문 접수 시도)`
     );
 
+    // Step 1: Persist the order and retrieve the generated order ID (주문 저장 및 생성된 주문 ID 조회)
     const { data, error } = await supabase
       .from('orders')
       .insert({
         store_id:       session.storeData.id,   // Primary store identifier from schema (스키마의 기본 매장 식별자)
         agent_id:       session.agentId,         // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
         customer_phone: fnArgs.customer_phone,
-        customer_email: fnArgs.customer_email,   // Email for order confirmation receipt (주문 확인 영수증 전송용 이메일)
+        customer_email: fnArgs.customer_email,   // Email for payment link delivery (결제 링크 전송용 이메일)
         items:          fnArgs.items,            // JSON array of { name, quantity } — duplicates pre-merged by Gemini (Gemini가 사전 합산한 항목 배열)
         total_amount:   fnArgs.total_amount,     // Calculated total from Gemini based on menu prices (메뉴 가격 기반 Gemini 계산 총액)
         status:         'pending',
@@ -693,7 +696,7 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       .single();
 
     if (error) {
-      // Log the raw error but return a clean message Gemini can speak (원시 오류 기록, Gemini용 안내 메시지 반환)
+      // Log the raw error but return a voiceable message to Gemini (원시 오류 기록, Gemini용 안내 메시지 반환)
       console.error(`[WS] [${session.agentId}] place_order DB error (주문 DB 오류):`, error);
       return {
         success: false,
@@ -701,11 +704,28 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       };
     }
 
-    console.log(`[WS] [${session.agentId}] place_order success | order_id: ${data.id} (주문 성공)`);
+    console.log(`[WS] [${session.agentId}] place_order DB insert success | order_id: ${data.id} (주문 DB 삽입 성공)`);
+
+    // Step 2: Generate the payment link for the new order (새 주문에 대한 결제 링크 생성)
+    const { paymentUrl } = await createPaymentLink(
+      data.id,
+      fnArgs.total_amount,
+      session.storeData.id,
+    );
+
+    // Step 3: Dispatch SMS and email notification to the customer (고객에게 SMS 및 이메일 알림 발송)
+    await sendPaymentLink(fnArgs.customer_phone, fnArgs.customer_email, paymentUrl);
+
+    console.log(
+      `[WS] [${session.agentId}] place_order pipeline complete | order_id: ${data.id} | ` +
+      `payment_url: ${paymentUrl} (주문 파이프라인 완료)`
+    );
+
+    // Return a structured result — Gemini converts this into a natural spoken confirmation
+    // (구조화된 결과 반환 — Gemini가 자연스러운 음성 확인으로 변환)
     return {
-      success:  true,
-      order_id: data.id,
-      message:  `Order confirmed! Your order ID is ${data.id}. We will have it ready for you shortly.`,
+      status:  'success',
+      message: 'Order saved. Payment link sent to customer\'s email/phone. Tell them to check it.',
     };
   }
 
