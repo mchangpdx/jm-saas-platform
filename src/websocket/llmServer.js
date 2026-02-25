@@ -65,8 +65,9 @@
 import { WebSocketServer }      from 'ws';
 import { supabase }             from '../config/supabase.js';
 import { createGenerationModel } from '../services/llm/gemini.js';
-import { createPaymentLink }    from '../services/payment/maverickPg.js';
-import { sendPaymentLink }      from '../services/notification/notifier.js';
+import { createPaymentLink }           from '../services/payment/maverickPg.js';
+import { sendPaymentLink,
+         sendReservationConfirmation } from '../services/notification/notifier.js';
 
 // WebSocket path — must match the path configured in Retell's agent dashboard
 // (WebSocket 경로 — Retell 에이전트 대시보드에 설정된 경로와 일치해야 함)
@@ -714,7 +715,14 @@ async function executeFunctionCall(fnName, fnArgs, session) {
     );
 
     // Step 3: Dispatch SMS and email notification to the customer (고객에게 SMS 및 이메일 알림 발송)
-    await sendPaymentLink(fnArgs.customer_phone, fnArgs.customer_email, paymentUrl);
+    await sendPaymentLink({
+      customerPhone: fnArgs.customer_phone,
+      customerEmail: fnArgs.customer_email,
+      paymentUrl,
+      storeName:     session.storeData.store_name ?? 'Our Restaurant',
+      items:         fnArgs.items,
+      totalAmount:   fnArgs.total_amount,
+    });
 
     console.log(
       `[WS] [${session.agentId}] place_order pipeline complete | order_id: ${data.id} | ` +
@@ -730,23 +738,24 @@ async function executeFunctionCall(fnName, fnArgs, session) {
   }
 
   // ── make_reservation (ACTIVE) ──────────────────────────────────────────────
-  // Insert a confirmed reservation row into the reservations table.
-  // Returns success with reservation_id, or a failure message Gemini can voice.
-  // (확정된 예약을 reservations 테이블에 삽입.
-  //  성공 시 reservation_id 반환, 실패 시 Gemini용 안내 메시지 반환)
+  // Insert a confirmed reservation row, then notify the customer via email and SMS.
+  // Pipeline: DB insert → sendReservationConfirmation → return result to Gemini.
+  // (확정된 예약 삽입 → 이메일/SMS 알림 발송 → Gemini에 결과 반환.
+  //  각 단계 실패 시 Gemini가 고객에게 안내할 실패 메시지 반환)
   if (fnName === 'make_reservation') {
     console.log(
       `[WS] [${session.agentId}] make_reservation | phone: ${fnArgs.customer_phone} | ` +
       `email: ${fnArgs.customer_email} | ${fnArgs.date} ${fnArgs.time} | party: ${fnArgs.party_size} (예약 접수 시도)`
     );
 
+    // Step 1: Persist the reservation and retrieve the generated reservation ID (예약 저장 및 생성된 예약 ID 조회)
     const { data, error } = await supabase
       .from('reservations')
       .insert({
         store_id:         session.storeData.id,  // Primary store identifier from schema (스키마의 기본 매장 식별자)
         agent_id:         session.agentId,        // Retell agent ID retained for call tracing (통화 추적용 Retell 에이전트 ID 보존)
         customer_phone:   fnArgs.customer_phone,
-        customer_email:   fnArgs.customer_email,  // Email for reservation confirmation receipt (예약 확인 영수증 전송용 이메일)
+        customer_email:   fnArgs.customer_email,  // Email for confirmation receipt delivery (확인 영수증 전송용 이메일)
         reservation_date: fnArgs.date,
         reservation_time: fnArgs.time,
         party_size:       fnArgs.party_size,
@@ -757,7 +766,7 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       .single();
 
     if (error) {
-      // Log the raw error but return a clean message Gemini can speak (원시 오류 기록, Gemini용 안내 메시지 반환)
+      // Log the raw error but return a voiceable message to Gemini (원시 오류 기록, Gemini용 안내 메시지 반환)
       console.error(`[WS] [${session.agentId}] make_reservation DB error (예약 DB 오류):`, error);
       return {
         success: false,
@@ -765,12 +774,31 @@ async function executeFunctionCall(fnName, fnArgs, session) {
       };
     }
 
-    console.log(`[WS] [${session.agentId}] make_reservation success | reservation_id: ${data.id} (예약 성공)`);
+    console.log(`[WS] [${session.agentId}] make_reservation DB insert success | reservation_id: ${data.id} (예약 DB 삽입 성공)`);
+
+    // Step 2: Dispatch email and SMS confirmation to the customer (고객에게 이메일 및 SMS 예약 확인 발송)
+    await sendReservationConfirmation({
+      customerPhone: fnArgs.customer_phone,
+      customerEmail: fnArgs.customer_email,
+      storeName:     session.storeData.store_name ?? 'Our Restaurant',
+      date:          fnArgs.date,
+      time:          fnArgs.time,
+      partySize:     fnArgs.party_size,
+      reservationId: data.id,
+    });
+
+    console.log(
+      `[WS] [${session.agentId}] make_reservation pipeline complete | reservation_id: ${data.id} ` +
+      `(예약 파이프라인 완료)`
+    );
+
+    // Return a structured result — Gemini converts this into a natural spoken confirmation
+    // (구조화된 결과 반환 — Gemini가 자연스러운 음성 확인으로 변환)
     return {
-      success:        true,
+      status:        'success',
       reservation_id: data.id,
-      message:        `Reservation confirmed for ${fnArgs.party_size} on ${fnArgs.date} at ${fnArgs.time}. ` +
-                      `Your confirmation ID is ${data.id}. See you then!`,
+      message:       `Reservation confirmed for ${fnArgs.party_size} on ${fnArgs.date} at ${fnArgs.time}. ` +
+                     `Confirmation ID ${data.id} sent to the customer's email and phone.`,
     };
   }
 
