@@ -28,18 +28,36 @@ function buildSmtpTransport() {
 
   if (!SMTP_USER || !SMTP_PASS) {
     // Credentials absent — transport unavailable, will fall back to mock (자격 증명 없음 — 목 모드로 전환)
+    console.warn(
+      '[Notifier] SMTP_USER or SMTP_PASS not set — email will run in MOCK mode ' +
+      '(SMTP_USER 또는 SMTP_PASS 미설정 — 이메일 목 모드로 실행)'
+    );
     return null;
   }
 
-  return nodemailer.createTransport({
-    host:   process.env.SMTP_HOST ?? 'smtp.gmail.com',
-    port:   Number(process.env.SMTP_PORT ?? 587),
-    secure: Number(process.env.SMTP_PORT ?? 587) === 465, // true only for port 465 (포트 465일 때만 TLS 활성화)
+  // SMTP host/port are configurable via env; default to Gmail STARTTLS settings
+  // (SMTP 호스트/포트는 환경변수로 설정 가능 — 기본값은 Gmail STARTTLS 설정)
+  const host   = process.env.SMTP_HOST ?? 'smtp.gmail.com';
+  const port   = Number(process.env.SMTP_PORT ?? 587);
+  const secure = port === 465; // true only for port 465 (implicit TLS); 587 uses STARTTLS (포트 465만 암묵적 TLS; 587은 STARTTLS)
+
+  const transport = nodemailer.createTransport({
+    host,
+    port,
+    secure,
     auth: {
       user: SMTP_USER,
-      pass: SMTP_PASS,
+      pass: SMTP_PASS, // For Gmail, use an App Password — not the account password (Gmail은 앱 비밀번호 사용 — 계정 비밀번호 아님)
     },
   });
+
+  // Log at startup so it is clear whether real or mock email is active (실제 이메일 활성 여부를 시작 시 명확히 로깅)
+  console.log(
+    `[Notifier] SMTP transport active | host: ${host}:${port} | from: ${SMTP_USER} ` +
+    `(SMTP 트랜스포트 활성화 | 호스트: ${host}:${port} | 발신자: ${SMTP_USER})`
+  );
+
+  return transport;
 }
 
 // Singleton transport — created on first module load (모듈 첫 로드 시 생성되는 싱글톤 트랜스포트)
@@ -298,6 +316,8 @@ async function sendEmail({ to, subject, html }) {
 
   try {
     const info = await smtpTransport.sendMail({
+      // Use SMTP_USER directly as the from address — it is the authenticated sender
+      // (SMTP_USER를 발신자 주소로 직접 사용 — 인증된 발신자)
       from:    `"${process.env.SMTP_FROM_NAME ?? 'JM Restaurant'}" <${process.env.SMTP_USER}>`,
       to,
       subject,
@@ -308,12 +328,26 @@ async function sendEmail({ to, subject, html }) {
       `(이메일 발송 완료 | 수신자: ${to} | 메시지 ID: ${info.messageId})`
     );
   } catch (err) {
-    // Log but do not re-throw — notification failure must not block the order flow
-    // (로깅 후 예외 미전파 — 알림 실패가 주문 흐름을 차단하면 안 됨)
-    console.error(
-      `[Notifier] Email send failed → ${to} | ${err.message} ` +
-      `(이메일 발송 실패 | 수신자: ${to} | 오류: ${err.message})`
-    );
+    // Distinguish auth failures (SMTP 535) from other errors for actionable debugging
+    // (디버깅 편의를 위해 인증 실패(SMTP 535)와 그 외 오류를 구분하여 로깅)
+    const isAuthError = err.responseCode === 535 || /username|password|credentials|authenticate/i.test(err.message);
+    if (isAuthError) {
+      console.error(
+        `[Notifier] Email auth failed — check SMTP_USER and SMTP_PASS. ` +
+        `For Gmail, SMTP_PASS must be a 16-character App Password, not your account password. ` +
+        `Generate one at: https://myaccount.google.com/apppasswords | Error: ${err.message} ` +
+        `(이메일 인증 실패 — SMTP_USER/SMTP_PASS 확인 필요. ` +
+        `Gmail 사용 시 SMTP_PASS는 앱 비밀번호(16자리)여야 함 | 오류: ${err.message})`
+      );
+    } else {
+      // Non-auth SMTP error — log and continue without crashing (비인증 SMTP 오류 — 로깅 후 계속 실행)
+      console.error(
+        `[Notifier] Email send failed → ${to} | ${err.message} ` +
+        `(이메일 발송 실패 | 수신자: ${to} | 오류: ${err.message})`
+      );
+    }
+    // Never re-throw — notification failure must not block the order pipeline
+    // (절대 예외 재전파 금지 — 알림 실패가 주문 파이프라인을 차단하면 안 됨)
   }
 }
 
