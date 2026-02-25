@@ -87,15 +87,21 @@ app.get('/', async (req, res) => {
   );
 
   try {
-    // Step 1: Exchange authorization code for an access token using validated env vars
-    // (검증된 환경 변수를 사용하여 인증 코드를 액세스 토큰으로 교환)
-    const tokenRes = await axios.post('https://api.loyverse.com/oauth/token', {
-      grant_type:    'authorization_code',
+    // Step 1: Exchange authorization code for an access token.
+    // OAuth 2.0 spec requires application/x-www-form-urlencoded — NOT JSON.
+    // URLSearchParams serialises the body correctly and Axios sets the Content-Type header automatically.
+    // (인증 코드를 액세스 토큰으로 교환.
+    //  OAuth 2.0 규격은 application/x-www-form-urlencoded 필수 — JSON 불가.
+    //  URLSearchParams가 바디를 올바르게 직렬화하고 Axios가 Content-Type 헤더를 자동 설정)
+    const tokenPayload = new URLSearchParams({
       client_id:     clientId,
       client_secret: clientSecret,
-      redirect_uri:  redirectUri,
+      grant_type:    'authorization_code',
       code,
+      redirect_uri:  redirectUri,
     });
+
+    const tokenRes = await axios.post('https://api.loyverse.com/oauth/token', tokenPayload);
 
     const accessToken = tokenRes.data.access_token;
 
