@@ -51,6 +51,30 @@ export const POS_TOOLS = [
         },
       },
 
+      // ── search_menu ─────────────────────────────────────────────────────────
+      // Query the synced menu_items catalog by keyword, or return the full menu_cache.
+      // Prefer this over get_menu when the customer asks about a specific dish or price.
+      // (키워드로 동기화된 menu_items 카탈로그 조회, 또는 전체 menu_cache 반환.
+      //  고객이 특정 요리나 가격을 물을 때 get_menu보다 이 도구를 사용)
+      {
+        name: 'search_menu',
+        description:
+          'Search for specific menu items by keyword. ' +
+          'Call this when the customer asks about a specific dish, ingredient, or price. ' +
+          'If no keyword is provided, returns the full menu. ' +
+          '(고객이 특정 요리, 재료, 가격을 물을 때 호출. 키워드 없으면 전체 메뉴 반환)',
+        parameters: {
+          type: 'object',
+          properties: {
+            keyword: {
+              type:        'string',
+              description: 'Search term to find matching menu items by name (이름으로 메뉴 항목을 찾는 검색어)',
+            },
+          },
+          required: [],  // keyword is optional — omit to get the full menu (키워드는 선택 사항 — 생략 시 전체 메뉴 반환)
+        },
+      },
+
       // ── place_order (ACTIVE) ─────────────────────────────────────────────────
       // Inserts a confirmed order row into the orders table.
       // Call ONLY after the customer has explicitly confirmed every item and quantity.

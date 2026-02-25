@@ -668,6 +668,47 @@ async function executeFunctionCall(fnName, fnArgs, session) {
     return { menu: menuContent };
   }
 
+  // ── search_menu ────────────────────────────────────────────────────────────
+  // Query menu_items by keyword (ilike), or return full menu_cache if no keyword.
+  // Allows Gemini to answer specific price / availability questions accurately.
+  // (키워드로 menu_items 조회(ilike), 키워드 없으면 전체 menu_cache 반환.
+  //  Gemini가 특정 가격/재고 질문에 정확하게 답할 수 있도록 함)
+  if (fnName === 'search_menu') {
+    const keyword = fnArgs.keyword?.trim() ?? '';
+    console.log(
+      `[WS] [${session.agentId}] search_menu | keyword: "${keyword}" ` +
+      `(메뉴 검색 | 키워드: "${keyword}")`
+    );
+
+    if (!keyword) {
+      // No keyword — return the pre-cached full menu string (키워드 없음 — 사전 캐시된 전체 메뉴 문자열 반환)
+      const menuContent = session.storeData.menu_cache ?? 'Menu information is currently unavailable.';
+      return { menu: menuContent };
+    }
+
+    // Keyword supplied — query menu_items for partial name matches using ilike
+    // (키워드 있음 — ilike로 부분 이름 일치하는 menu_items 조회)
+    const { data: items, error } = await supabase
+      .from('menu_items')
+      .select('name, price, category')
+      .eq('store_id', session.storeData.id)
+      .ilike('name', `%${keyword}%`);
+
+    if (error) {
+      console.error(`[WS] [${session.agentId}] search_menu DB error (메뉴 검색 DB 오류):`, error);
+      return { results: [], message: 'Menu search failed. Please ask the customer to repeat their request.' };
+    }
+
+    if (!items?.length) {
+      return {
+        results: [],
+        message: `No menu items found matching "${keyword}". Please ask the customer if they meant something else.`,
+      };
+    }
+
+    return { results: items };
+  }
+
   // ── place_order (ACTIVE) ───────────────────────────────────────────────────
   // Insert a confirmed order row, generate a payment link, and notify the customer.
   // Pipeline: DB insert → createPaymentLink → sendPaymentLink → return result to Gemini.

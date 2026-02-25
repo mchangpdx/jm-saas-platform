@@ -4,6 +4,7 @@ import express from 'express';
 import { env }            from './config/env.js';
 import { v1Router }       from './routes/v1/index.js';
 import { paymentRouter }  from './routes/paymentRoutes.js';
+import { posRouter }      from './routes/posRoutes.js';
 import { setupWebSocket } from './websocket/llmServer.js';
 
 const app = express();
@@ -30,6 +31,10 @@ app.use('/api/v1', v1Router);
 // Mount payment callback router — handles mock PG redirect and order status updates
 // (결제 콜백 라우터 마운트 — 목 PG 리다이렉트 및 주문 상태 업데이트 처리)
 app.use('/api/payment', paymentRouter);
+
+// Mount POS management router — Loyverse catalog sync and menu management
+// (POS 관리 라우터 마운트 — Loyverse 카탈로그 동기화 및 메뉴 관리)
+app.use('/api/pos', posRouter);
 
 // Root ping — infrastructure health check (루트 핑 — 인프라 헬스 체크)
 app.get('/', (_req, res) => {
