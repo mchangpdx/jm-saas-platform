@@ -1,11 +1,13 @@
 // Entry point — bootstrap Express app and mount all middleware/routes (진입점 — Express 앱 초기화 및 미들웨어/라우트 마운트)
 import './config/env.js'; // Validate env vars before anything else (다른 모듈보다 먼저 환경 변수 검증)
 import express from 'express';
+import axios             from 'axios';
 import { env }            from './config/env.js';
 import { v1Router }       from './routes/v1/index.js';
 import { paymentRouter }  from './routes/paymentRoutes.js';
 import { posRouter }      from './routes/posRoutes.js';
 import { webhookRouter }  from './routes/webhookRoutes.js';
+import { authRouter }     from './routes/authRoutes.js';
 import { setupWebSocket } from './websocket/llmServer.js';
 import './jobs/cronJobs.js'; // Activate the daily menu sync scheduler on boot (부팅 시 일별 메뉴 동기화 스케줄러 활성화)
 
@@ -42,9 +44,88 @@ app.use('/api/pos', posRouter);
 // (웹훅 라우터 마운트 — 실시간 Loyverse 항목 업데이트 알림 수신)
 app.use('/api/webhooks', webhookRouter);
 
-// Root ping — infrastructure health check (루트 핑 — 인프라 헬스 체크)
-app.get('/', (_req, res) => {
-  res.json({ service: 'jm-saas-platform', status: 'running' });
+// Mount auth router — one-time Loyverse OAuth setup (일회성 Loyverse OAuth 설정 라우터 마운트)
+app.use('/api/auth', authRouter);
+
+// ── Root Route — OAuth callback or health check ───────────────────────────────
+//
+// LOYVERSE_REDIRECT_URI is set to the root ngrok URL, so the OAuth callback
+// lands here as GET /?code=<auth_code>. Any request without a code is a
+// standard infrastructure health check.
+// (LOYVERSE_REDIRECT_URI가 ngrok 루트 URL로 설정되어 OAuth 콜백이
+//  GET /?code=<인증_코드>로 도착. code 없는 요청은 일반 헬스 체크)
+app.get('/', async (req, res) => {
+
+  if (!req.query.code) {
+    // No OAuth code present — standard health check response (OAuth 코드 없음 — 일반 헬스 체크 응답)
+    return res.json({ service: 'jm-saas-platform', status: 'running' });
+  }
+
+  // ── OAuth callback — exchange code → token → register webhook ─────────────
+  const { code } = req.query;
+
+  console.log(
+    `[OAuth] Callback received | code: ${code.slice(0, 8)}… ` +
+    `(OAuth 콜백 수신 | 코드: ${code.slice(0, 8)}…)`
+  );
+
+  try {
+    // Step 1: Exchange authorization code for an access token
+    // (인증 코드를 액세스 토큰으로 교환)
+    const tokenRes = await axios.post('https://api.loyverse.com/oauth/token', {
+      grant_type:    'authorization_code',
+      client_id:     process.env.LOYVERSE_CLIENT_ID,
+      client_secret: process.env.LOYVERSE_CLIENT_SECRET,
+      redirect_uri:  process.env.LOYVERSE_REDIRECT_URI,
+      code,
+    });
+
+    const accessToken = tokenRes.data.access_token;
+
+    console.log(
+      '[OAuth] Access token obtained — registering webhook (' +
+      'OAuth 액세스 토큰 획득 — 웹훅 등록 중)'
+    );
+
+    // Step 2: Register the items.update webhook using the newly obtained token
+    // (새로 획득한 토큰으로 items.update 웹훅 등록)
+    await axios.post(
+      'https://api.loyverse.com/v1.0/webhooks',
+      {
+        action: 'items.update',
+        url:    `${process.env.LOYVERSE_REDIRECT_URI}/api/webhooks/loyverse/items`,
+      },
+      {
+        headers: {
+          Authorization:  `Bearer ${accessToken}`,  // Short-lived token from OAuth exchange (OAuth 교환으로 얻은 단기 토큰)
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(
+      '[OAuth] Webhook registered successfully | action: items.update (' +
+      'OAuth 웹훅 등록 성공 | 액션: items.update)'
+    );
+
+    // Step 3: Confirm success to the user — they can now close the browser tab
+    // (사용자에게 성공 확인 — 브라우저 탭을 닫아도 됨)
+    return res.status(200).send(
+      '<h1>Webhook Setup Complete!</h1>' +
+      '<p>Loyverse will now send real-time item updates to this server. You can close this window.</p>'
+    );
+
+  } catch (err) {
+    // OAuth or webhook registration failed — show error detail in the browser (OAuth 또는 웹훅 등록 실패 — 브라우저에 오류 상세 표시)
+    const detail = err.response?.data ?? err.message;
+    console.error(
+      `[OAuth] Setup failed | ${JSON.stringify(detail)} ` +
+      `(OAuth 설정 실패 | 오류: ${JSON.stringify(detail)})`
+    );
+    return res.status(500).send(
+      `<h1>OAuth Setup Failed</h1><p>${JSON.stringify(detail)}</p>`
+    );
+  }
 });
 
 // ── 404 Handler ───────────────────────────────────────────────────────────────
