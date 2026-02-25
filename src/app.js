@@ -110,35 +110,51 @@ app.get('/', async (req, res) => {
       'OAuth 액세스 토큰 획득 — 웹훅 등록 중)'
     );
 
-    // Step 2: Register the items.update webhook using the newly obtained token.
-    // Loyverse requires the key "type" (NOT "action") — sending "action" causes a 400 error.
-    // Content-Type must be application/json for this endpoint.
-    // (새로 획득한 토큰으로 items.update 웹훅 등록.
-    //  Loyverse는 "type" 키를 요구함 — "action" 사용 시 400 오류 발생.
-    //  이 엔드포인트는 Content-Type: application/json 필수)
-    const webhookPayload = {
-      type:   'items.update',                                          // Loyverse required key — must be "type" not "action" (Loyverse 필수 키 — "action"이 아닌 "type" 사용)
-      url:    `${redirectUri}/api/webhooks/loyverse/items`,           // Endpoint that receives real-time item change events (실시간 항목 변경 이벤트를 수신하는 엔드포인트)
-      status: 'ENABLED',                                              // Required by Loyverse — explicitly activates the webhook (Loyverse 필수 — 웹훅을 명시적으로 활성화)
-    };
+    // Step 2: Register all three critical webhooks in a loop.
+    // Each type gets its own endpoint path derived from the event name prefix.
+    // Errors are caught per-type so a duplicate registration does not abort the rest.
+    // (세 가지 핵심 웹훅을 루프로 등록.
+    //  각 타입은 이벤트명 접두사에서 파생된 고유 엔드포인트 경로를 가짐.
+    //  오류는 타입별로 포착 — 중복 등록이 나머지 등록을 중단하지 않음)
+    const webhookTypes = ['items.update', 'receipts.update', 'inventory_levels.update'];
 
-    await axios.post('https://api.loyverse.com/v1.0/webhooks', webhookPayload, {
-      headers: {
-        Authorization:  `Bearer ${accessToken}`,  // Short-lived token from OAuth exchange (OAuth 교환으로 얻은 단기 토큰)
-        'Content-Type': 'application/json',
-      },
-    });
+    for (const type of webhookTypes) {
+      // Derive endpoint name from the event type prefix (e.g. 'items.update' → 'items')
+      // (이벤트 타입 접두사에서 엔드포인트명 파생 — 예: 'items.update' → 'items')
+      const endpointName = type.split('.')[0];
 
-    console.log(
-      '[OAuth] Webhook registered successfully | type: items.update (' +
-      'OAuth 웹훅 등록 성공 | 타입: items.update)'
-    );
+      const webhookPayload = {
+        type:   type,                                                    // Loyverse event type — "type" key required (NOT "action") (Loyverse 이벤트 타입 — "action"이 아닌 "type" 키 사용)
+        url:    `${redirectUri}/api/webhooks/loyverse/${endpointName}`, // Dedicated endpoint per event type (이벤트 타입별 전용 엔드포인트)
+        status: 'ENABLED',                                               // Required by Loyverse to activate the webhook (웹훅 활성화를 위한 Loyverse 필수 필드)
+      };
+
+      try {
+        await axios.post('https://api.loyverse.com/v1.0/webhooks', webhookPayload, {
+          headers: {
+            Authorization:  `Bearer ${accessToken}`,  // Short-lived token from OAuth exchange (OAuth 교환으로 얻은 단기 토큰)
+            'Content-Type': 'application/json',
+          },
+        });
+        console.log(
+          `[OAuth] Webhook registered | type: ${type} | endpoint: /api/webhooks/loyverse/${endpointName} ` +
+          `(웹훅 등록 성공 | 타입: ${type} | 엔드포인트: /api/webhooks/loyverse/${endpointName})`
+        );
+      } catch (webhookErr) {
+        // Log but continue — webhook may already exist from a previous setup run (로깅 후 계속 — 이전 설정에서 웹훅이 이미 존재할 수 있음)
+        const webhookDetail = webhookErr.response?.data ?? webhookErr.message;
+        console.warn(
+          `[OAuth] Webhook registration info | type: ${type} | ${JSON.stringify(webhookDetail)} ` +
+          `(웹훅 등록 정보 | 타입: ${type} | 이미 존재하거나 실패)`
+        );
+      }
+    }
 
     // Step 3: Confirm success to the user — they can now close the browser tab
     // (사용자에게 성공 확인 — 브라우저 탭을 닫아도 됨)
     return res.status(200).send(
       '<h1>Webhook Setup Complete!</h1>' +
-      '<p>Loyverse will now send real-time item updates to this server. You can close this window.</p>'
+      '<p>Registered: items.update, receipts.update, inventory_levels.update. You can close this window.</p>'
     );
 
   } catch (err) {

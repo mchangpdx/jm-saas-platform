@@ -12,6 +12,69 @@ import { syncMenuFromLoyverse } from '../services/pos/posService.js';
 
 export const webhookRouter = Router();
 
+// ── Shared background sync helper ────────────────────────────────────────────
+
+/**
+ * Fetch all stores with a pos_api_key and run syncMenuFromLoyverse for each.
+ * Shared by all three Loyverse webhook endpoints to avoid code duplication.
+ * (pos_api_key가 있는 모든 매장 조회 후 syncMenuFromLoyverse 실행.
+ *  코드 중복 방지를 위해 세 Loyverse 웹훅 엔드포인트가 공유)
+ *
+ * @param {string} triggerLabel — label used in log lines to identify which event fired (어떤 이벤트가 발생했는지 식별하는 로그 레이블)
+ */
+async function runBackgroundSync(triggerLabel) {
+  console.log(
+    `[WebhookRoute] Background menu re-sync triggered by ${triggerLabel} ` +
+    `(${triggerLabel}에 의해 백그라운드 메뉴 재동기화 트리거)`
+  );
+
+  const { data: stores, error: fetchError } = await supabase
+    .from('stores')
+    .select('id, name, pos_api_key')
+    .not('pos_api_key', 'is', null);
+
+  if (fetchError || !stores?.length) {
+    console.error(
+      `[WebhookRoute] Failed to fetch stores for ${triggerLabel} sync | ` +
+      `${fetchError?.message ?? 'no stores found'} ` +
+      `(${triggerLabel} 동기화를 위한 매장 조회 실패 | 오류: ${fetchError?.message ?? '매장 없음'})`
+    );
+    return;
+  }
+
+  for (const store of stores) {
+    try {
+      // Log the store name before each sync so progress is visible in server output (동기화 전 매장명 로깅 — 서버 출력에서 진행 상황 확인)
+      console.log(
+        `[WebhookRoute] Starting background menu sync for store: ${store.name} (${store.id}) ` +
+        `(백그라운드 메뉴 동기화 시작 | 매장: ${store.name} (${store.id}))`
+      );
+      const result = await syncMenuFromLoyverse(store.id, store.pos_api_key);
+
+      if (result.success) {
+        console.log(
+          `[WebhookRoute] Webhook sync success | store: ${store.name} (${store.id}) | ` +
+          `synced: ${result.synced} variants from ${result.itemCount} items ` +
+          `(웹훅 동기화 성공 | 매장: ${store.name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
+        );
+      } else {
+        console.error(
+          `[WebhookRoute] Webhook sync failed | store: ${store.name} (${store.id}) | ${result.error} ` +
+          `(웹훅 동기화 실패 | 매장: ${store.name} | 오류: ${result.error})`
+        );
+      }
+    } catch (err) {
+      // Per-store error — log and continue to next store (매장별 오류 — 로깅 후 다음 매장으로 계속)
+      console.error(
+        `[WebhookRoute] Unexpected error during webhook sync | store: ${store.name} (${store.id}) | ${err.message} ` +
+        `(웹훅 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
+      );
+    }
+  }
+
+  console.log(`[WebhookRoute] Background webhook sync complete | trigger: ${triggerLabel} (백그라운드 웹훅 동기화 완료 | 트리거: ${triggerLabel})`);
+}
+
 // ── POST /loyverse/items ──────────────────────────────────────────────────────
 
 /**
@@ -41,59 +104,59 @@ webhookRouter.post('/loyverse/items', (req, res) => {
   // (즉시 확인 — Loyverse 재시도 방지를 위해 빠른 200 응답 필수)
   res.status(200).send('OK');
 
-  // Background sync — detached from the HTTP request lifecycle via setTimeout
-  // (백그라운드 동기화 — setTimeout으로 HTTP 요청 라이프사이클에서 분리)
-  setTimeout(async () => {
-    console.log('[WebhookRoute] Background menu re-sync triggered by Loyverse webhook (Loyverse 웹훅으로 백그라운드 메뉴 재동기화 트리거)');
+  // Fire-and-forget background sync — detached from the HTTP request lifecycle
+  // (파이어 앤 포겟 백그라운드 동기화 — HTTP 요청 라이프사이클에서 분리)
+  runBackgroundSync('items.update webhook').catch((err) => {
+    console.error(`[WebhookRoute] Unhandled error in runBackgroundSync | ${err.message} (runBackgroundSync 미처리 오류)`);
+  });
+});
 
-    // Fetch all stores that have a Loyverse API key configured
-    // (Loyverse API 키가 설정된 모든 매장 조회)
-    const { data: stores, error: fetchError } = await supabase
-      .from('stores')
-      .select('id, name, pos_api_key')  // 'name' is the correct stores column — not 'store_name' (올바른 stores 컬럼명은 'name' — 'store_name' 아님)
-      .not('pos_api_key', 'is', null);
+// ── POST /loyverse/receipts ───────────────────────────────────────────────────
 
-    if (fetchError || !stores?.length) {
-      console.error(
-        `[WebhookRoute] Failed to fetch stores for webhook-triggered sync | ` +
-        `${fetchError?.message ?? 'no stores found'} ` +
-        `(웹훅 트리거 동기화를 위한 매장 조회 실패 | 오류: ${fetchError?.message ?? '매장 없음'})`
-      );
-      return;
-    }
+/**
+ * Receive real-time receipt update notifications from Loyverse.
+ * Acknowledges immediately and triggers a background menu re-sync.
+ * (Loyverse로부터 실시간 영수증 업데이트 알림 수신. 즉시 확인 후 백그라운드 메뉴 재동기화 트리거)
+ */
+webhookRouter.post('/loyverse/receipts', (req, res) => {
+  // Log the raw payload for debugging (디버깅을 위해 원시 페이로드 로깅)
+  console.log(
+    '[WebhookRoute] Loyverse receipt update received | payload keys: ' +
+    `${Object.keys(req.body ?? {}).join(', ')} ` +
+    `(Loyverse 영수증 업데이트 수신 | 페이로드 키: ${Object.keys(req.body ?? {}).join(', ')})`
+  );
 
-    // Sync each store sequentially to respect Loyverse API rate limits
-    // (Loyverse API 속도 제한 준수를 위해 매장별 순차 동기화)
-    for (const store of stores) {
-      try {
-        // Log the store name before each sync so progress is visible in server output (동기화 전 매장명 로깅 — 서버 출력에서 진행 상황 확인)
-        console.log(
-          `[WebhookRoute] Starting background menu sync for store: ${store.name} (${store.id}) ` +
-          `(백그라운드 메뉴 동기화 시작 | 매장: ${store.name} (${store.id}))`
-        );
-        const result = await syncMenuFromLoyverse(store.id, store.pos_api_key);
+  // Acknowledge immediately — Loyverse requires a fast 200 to avoid retries
+  // (즉시 확인 — Loyverse 재시도 방지를 위해 빠른 200 응답 필수)
+  res.status(200).send('OK');
 
-        if (result.success) {
-          console.log(
-            `[WebhookRoute] Webhook sync success | store: ${store.name} (${store.id}) | ` +
-            `synced: ${result.synced} variants from ${result.itemCount} items ` +
-            `(웹훅 동기화 성공 | 매장: ${store.name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
-          );
-        } else {
-          console.error(
-            `[WebhookRoute] Webhook sync failed | store: ${store.name} (${store.id}) | ${result.error} ` +
-            `(웹훅 동기화 실패 | 매장: ${store.name} | 오류: ${result.error})`
-          );
-        }
-      } catch (err) {
-        // Per-store error — log and continue to next store (매장별 오류 — 로깅 후 다음 매장으로 계속)
-        console.error(
-          `[WebhookRoute] Unexpected error during webhook sync | store: ${store.name} (${store.id}) | ${err.message} ` +
-          `(웹훅 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
-        );
-      }
-    }
+  // Fire-and-forget background sync (파이어 앤 포겟 백그라운드 동기화)
+  runBackgroundSync('receipts.update webhook').catch((err) => {
+    console.error(`[WebhookRoute] Unhandled error in runBackgroundSync | ${err.message} (runBackgroundSync 미처리 오류)`);
+  });
+});
 
-    console.log('[WebhookRoute] Background webhook sync complete (백그라운드 웹훅 동기화 완료)');
-  }, 0);
+// ── POST /loyverse/inventory_levels ──────────────────────────────────────────
+
+/**
+ * Receive real-time inventory level update notifications from Loyverse.
+ * Acknowledges immediately and triggers a background menu re-sync.
+ * (Loyverse로부터 실시간 재고 수준 업데이트 알림 수신. 즉시 확인 후 백그라운드 메뉴 재동기화 트리거)
+ */
+webhookRouter.post('/loyverse/inventory_levels', (req, res) => {
+  // Log the raw payload for debugging (디버깅을 위해 원시 페이로드 로깅)
+  console.log(
+    '[WebhookRoute] Loyverse inventory level update received | payload keys: ' +
+    `${Object.keys(req.body ?? {}).join(', ')} ` +
+    `(Loyverse 재고 수준 업데이트 수신 | 페이로드 키: ${Object.keys(req.body ?? {}).join(', ')})`
+  );
+
+  // Acknowledge immediately — Loyverse requires a fast 200 to avoid retries
+  // (즉시 확인 — Loyverse 재시도 방지를 위해 빠른 200 응답 필수)
+  res.status(200).send('OK');
+
+  // Fire-and-forget background sync (파이어 앤 포겟 백그라운드 동기화)
+  runBackgroundSync('inventory_levels.update webhook').catch((err) => {
+    console.error(`[WebhookRoute] Unhandled error in runBackgroundSync | ${err.message} (runBackgroundSync 미처리 오류)`);
+  });
 });
