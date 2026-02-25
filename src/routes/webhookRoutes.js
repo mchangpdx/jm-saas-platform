@@ -50,7 +50,7 @@ webhookRouter.post('/loyverse/items', (req, res) => {
     // (Loyverse API 키가 설정된 모든 매장 조회)
     const { data: stores, error: fetchError } = await supabase
       .from('stores')
-      .select('id, store_name, pos_api_key')
+      .select('id, name, pos_api_key')  // 'name' is the correct stores column — not 'store_name' (올바른 stores 컬럼명은 'name' — 'store_name' 아님)
       .not('pos_api_key', 'is', null);
 
     if (fetchError || !stores?.length) {
@@ -66,25 +66,30 @@ webhookRouter.post('/loyverse/items', (req, res) => {
     // (Loyverse API 속도 제한 준수를 위해 매장별 순차 동기화)
     for (const store of stores) {
       try {
+        // Log the store name before each sync so progress is visible in server output (동기화 전 매장명 로깅 — 서버 출력에서 진행 상황 확인)
+        console.log(
+          `[WebhookRoute] Starting background menu sync for store: ${store.name} (${store.id}) ` +
+          `(백그라운드 메뉴 동기화 시작 | 매장: ${store.name} (${store.id}))`
+        );
         const result = await syncMenuFromLoyverse(store.id, store.pos_api_key);
 
         if (result.success) {
           console.log(
-            `[WebhookRoute] Webhook sync success | store: ${store.store_name} (${store.id}) | ` +
+            `[WebhookRoute] Webhook sync success | store: ${store.name} (${store.id}) | ` +
             `synced: ${result.synced} variants from ${result.itemCount} items ` +
-            `(웹훅 동기화 성공 | 매장: ${store.store_name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
+            `(웹훅 동기화 성공 | 매장: ${store.name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
           );
         } else {
           console.error(
-            `[WebhookRoute] Webhook sync failed | store: ${store.store_name} (${store.id}) | ${result.error} ` +
-            `(웹훅 동기화 실패 | 매장: ${store.store_name} | 오류: ${result.error})`
+            `[WebhookRoute] Webhook sync failed | store: ${store.name} (${store.id}) | ${result.error} ` +
+            `(웹훅 동기화 실패 | 매장: ${store.name} | 오류: ${result.error})`
           );
         }
       } catch (err) {
         // Per-store error — log and continue to next store (매장별 오류 — 로깅 후 다음 매장으로 계속)
         console.error(
-          `[WebhookRoute] Unexpected error during webhook sync | store: ${store.store_name} (${store.id}) | ${err.message} ` +
-          `(웹훅 동기화 중 예기치 않은 오류 | 매장: ${store.store_name} | 오류: ${err.message})`
+          `[WebhookRoute] Unexpected error during webhook sync | store: ${store.name} (${store.id}) | ${err.message} ` +
+          `(웹훅 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
         );
       }
     }

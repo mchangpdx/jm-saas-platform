@@ -31,7 +31,7 @@ cron.schedule('0 6 * * *', async () => {
   // (Loyverse API 키가 설정된 모든 매장 조회)
   const { data: stores, error: fetchError } = await supabase
     .from('stores')
-    .select('id, store_name, pos_api_key')
+    .select('id, name, pos_api_key')  // 'name' is the correct stores column — not 'store_name' (올바른 stores 컬럼명은 'name' — 'store_name' 아님)
     .not('pos_api_key', 'is', null);
 
   if (fetchError) {
@@ -61,21 +61,21 @@ cron.schedule('0 6 * * *', async () => {
 
       if (result.success) {
         console.log(
-          `[CronJobs] Menu sync success | store: ${store.store_name} (${store.id}) | ` +
+          `[CronJobs] Menu sync success | store: ${store.name} (${store.id}) | ` +
           `synced: ${result.synced} variants from ${result.itemCount} items ` +
-          `(메뉴 동기화 성공 | 매장: ${store.store_name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
+          `(메뉴 동기화 성공 | 매장: ${store.name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
         );
       } else {
         console.error(
-          `[CronJobs] Menu sync failed | store: ${store.store_name} (${store.id}) | ${result.error} ` +
-          `(메뉴 동기화 실패 | 매장: ${store.store_name} | 오류: ${result.error})`
+          `[CronJobs] Menu sync failed | store: ${store.name} (${store.id}) | ${result.error} ` +
+          `(메뉴 동기화 실패 | 매장: ${store.name} | 오류: ${result.error})`
         );
       }
     } catch (err) {
       // Unexpected error — log and continue to the next store (예기치 않은 오류 — 로깅 후 다음 매장으로 계속)
       console.error(
-        `[CronJobs] Unexpected error during menu sync | store: ${store.store_name} (${store.id}) | ${err.message} ` +
-        `(메뉴 동기화 중 예기치 않은 오류 | 매장: ${store.store_name} | 오류: ${err.message})`
+        `[CronJobs] Unexpected error during menu sync | store: ${store.name} (${store.id}) | ${err.message} ` +
+        `(메뉴 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
       );
     }
   }
