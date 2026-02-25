@@ -328,11 +328,13 @@ export async function syncMenuFromLoyverse(storeId, storeApiKey) {
   }
 
   // ── Step 3: Upsert into menu_items ─────────────────────────────────────────
-  // onConflict on (store_id, variant_id) makes repeated syncs idempotent
-  // ((store_id, variant_id) 충돌 시 업서트 — 반복 동기화를 멱등적으로 만듦)
+  // onConflict targets variant_id — the unique constraint defined on the table.
+  // Repeated syncs safely overwrite name, price, and category without inserting duplicates.
+  // (onConflict는 테이블에 정의된 고유 제약 조건인 variant_id를 대상으로 함.
+  //  반복 동기화 시 중복 삽입 없이 name, price, category를 안전하게 덮어씀)
   const { error: upsertError } = await supabase
     .from('menu_items')
-    .upsert(rows, { onConflict: 'store_id,variant_id' });
+    .upsert(rows, { onConflict: 'variant_id' });
 
   if (upsertError) {
     console.error(
