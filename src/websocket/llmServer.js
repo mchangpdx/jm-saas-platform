@@ -850,21 +850,26 @@ async function fetchStoreData(agentId) {
 // ── Master Prompt Builder ─────────────────────────────────────────────────────
 
 /**
- * Assemble the Master Prompt from store knowledge fields plus two injected system blocks.
+ * Assemble the Master Prompt from store knowledge fields plus three injected system blocks.
  *
  * Structure (always in this order):
- *   1. DATE CONTEXT   — current date/time in the store's timezone so Gemini never
- *                       hallucinates relative dates ("tomorrow", "next Wednesday").
- *   2. STORE PERSONA  — system_prompt + business_hours + parking_info +
- *                       custom_knowledge + menu_cache from storeData.
- *                       Falls back to a generic assistant persona if all are empty.
- *   3. ORDER RULES    — item-grouping and total_amount calculation instructions
- *                       appended last so they override any conflicting persona text.
+ *   1. DATE CONTEXT         — current date/time in the store's timezone so Gemini never
+ *                             hallucinates relative dates ("tomorrow", "next Wednesday").
+ *   2. STORE PERSONA        — system_prompt + business_hours + parking_info +
+ *                             custom_knowledge + menu_cache from storeData.
+ *                             Falls back to a generic assistant persona if all are empty.
+ *   3. ORDER RULES          — item-grouping and total_amount calculation instructions.
+ *   4. CONFIRMATION RULES   — strict gate that prevents place_order / make_reservation
+ *                             from firing before explicit user confirmation and prevents
+ *                             duplicate tool calls for the same transaction.
+ *                             Placed absolutely last so it overrides everything above it.
  *
  * (마스터 프롬프트 구성:
  *  1. 날짜 컨텍스트 — 매장 시간대의 현재 날짜/시간 주입 — Gemini의 상대적 날짜 환각 방지.
  *  2. 매장 페르소나 — system_prompt, 영업시간, 주차, 지식, 메뉴 캐시 순서로 조립.
- *  3. 주문 규칙 — 항목 그룹화와 total_amount 계산 지시문 — 가장 마지막에 추가하여 우선 적용)
+ *  3. 주문 규칙 — 항목 그룹화와 total_amount 계산 지시문.
+ *  4. 확인 규칙 — 명시적 사용자 확인 전 도구 호출 금지 및 중복 호출 방지.
+ *     절대적으로 마지막에 위치하여 위의 모든 지시문을 재정의)
  *
  * @param {object} storeData — full store row from Supabase or mock (Supabase 또는 목에서 가져온 전체 스토어 행)
  * @returns {string}
@@ -887,20 +892,40 @@ function buildMasterPrompt(storeData) {
     hour12:   true,
   });
 
-  // Date context block — always prepended first so every downstream instruction can rely on it.
+  // Date context block — always first so every downstream instruction can rely on it.
   // (날짜 컨텍스트 블록 — 항상 첫 번째로 추가하여 이후 모든 지시문이 이를 참조할 수 있도록 함)
   const dateContextBlock =
     `SYSTEM INFO: Today's date and time is ${localDateTimeStr}. ` +
     `Use this absolute date to calculate any relative times (e.g., "tomorrow", "next Wednesday") ` +
     `requested by the user.`;
 
-  // Order rules block — always appended last so it takes precedence over persona instructions.
-  // (주문 규칙 블록 — 항상 마지막에 추가하여 페르소나 지시문보다 우선 적용)
+  // Order rules block — item grouping and total_amount calculation before calling place_order.
+  // (주문 규칙 블록 — place_order 호출 전 항목 그룹화 및 total_amount 계산 지시)
   const orderRulesBlock =
     `Order Instructions: When the user orders, group identical items ` +
     `(e.g., if they order 1 Latte and then another 1 Latte, merge it to 2 Lattes). ` +
     `You MUST calculate the total_amount based on the menu prices. ` +
     `Speak the final order summary and the total amount to the user before calling the place_order tool.`;
+
+  // Confirmation rules block — absolutely last so it overrides all persona and order instructions.
+  // Prevents premature tool calls and duplicate calls for the same transaction.
+  // (확인 규칙 블록 — 절대적으로 마지막에 위치하여 모든 페르소나 및 주문 지시문을 재정의.
+  //  조기 도구 호출 및 동일 트랜잭션 중복 호출 방지)
+  const confirmationRulesBlock =
+    `CRITICAL RULE FOR TOOL EXECUTION:\n` +
+    `Do NOT call place_order or make_reservation immediately as the user provides details.\n` +
+    `Step 1 — Summarize: Once you have all required details, summarize the complete ` +
+    `order or reservation (including total_amount for orders) and ask the user for ` +
+    `explicit confirmation. Example: "Your total is $15.00 for 2 Bulgogi and 1 Soju. ` +
+    `Should I go ahead and place this order?"\n` +
+    `Step 2 — Wait for confirmation: ONLY call the tool AFTER the user explicitly confirms ` +
+    `with a clear affirmative (e.g., "Yes", "Correct", "Go ahead", "Sure"). ` +
+    `If the user says anything other than a clear yes, do NOT call the tool — ` +
+    `instead, clarify or adjust the details.\n` +
+    `Step 3 — Call EXACTLY ONCE: Call the tool exactly once per transaction. ` +
+    `Once the tool returns a success response, tell the user it is confirmed and ` +
+    `do NOT call place_order or make_reservation again for the same request. ` +
+    `Duplicate tool calls for the same transaction are strictly forbidden.`;
 
   // Collect optional store-specific sections — falsy values are filtered out.
   // (선택적 매장별 섹션 수집 — falsy 값은 필터링)
@@ -919,7 +944,9 @@ function buildMasterPrompt(storeData) {
     : `You are a helpful voice ordering assistant for ${storeData.store_name ?? 'this store'}. ` +
       `Help customers browse the menu and place orders clearly and efficiently.`;
 
-  return [dateContextBlock, personaBlock, orderRulesBlock].join('\n\n');
+  // confirmationRulesBlock is always the final section — recency bias ensures highest priority.
+  // (confirmationRulesBlock은 항상 마지막 섹션 — 최근 편향으로 가장 높은 우선순위 보장)
+  return [dateContextBlock, personaBlock, orderRulesBlock, confirmationRulesBlock].join('\n\n');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
