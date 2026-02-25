@@ -17,12 +17,11 @@
  * @returns {Promise<{ paymentUrl: string }>}
  */
 export async function createPaymentLink(orderId, amount, storeId) {
-  // Build a clickable local URL so the payment flow can be completed end-to-end in development.
-  // APP_BASE_URL should be set to the public-facing origin in production (e.g. https://yourdomain.com).
-  // Falls back to http://localhost:3000 when the variable is absent.
-  // (로컬에서 전체 결제 흐름을 완성할 수 있는 클릭 가능한 URL 생성.
-  //  프로덕션에서는 APP_BASE_URL을 공개 도메인으로 설정해야 함 — 없으면 localhost:3000으로 폴백)
-  const baseUrl    = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+  // Resolve the public base URL from SERVER_URL — set this to the Ngrok HTTPS URL during development
+  // so payment links in emails are globally accessible. Falls back to localhost for local-only testing.
+  // (SERVER_URL에서 공개 베이스 URL 결정 — 개발 시 Ngrok HTTPS URL로 설정하면 이메일 링크가 전 세계 어디서나 접근 가능.
+  //  미설정 시 로컬 전용 테스트를 위해 localhost로 폴백)
+  const baseUrl    = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3000}`;
   const paymentUrl = `${baseUrl}/api/payment/mock/${orderId}`;
 
   console.log(
