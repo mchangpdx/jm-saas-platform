@@ -461,6 +461,120 @@ export async function syncMenuFromLoyverse(storeId, storeApiKey) {
 }
 
 /**
+ * Perform a full inventory sync from Loyverse GET /inventory into menu_items.stock_quantity.
+ *
+ * Fetches all inventory levels in a single API call and updates stock_quantity on each
+ * matching menu_items row by variant_id. Safe to call repeatedly — each run overwrites
+ * stock_quantity with the current Loyverse value.
+ *
+ * Must be run after syncMenuFromLoyverse so that the variant_id rows already exist
+ * in menu_items; otherwise the .eq('variant_id', …) filter matches no rows.
+ *
+ * (Loyverse GET /inventory에서 menu_items.stock_quantity로 전체 재고 동기화 수행.
+ *  단일 API 호출로 모든 재고 수준 조회 후 variant_id로 일치하는 menu_items 행 업데이트.
+ *  반복 호출 안전 — 매번 현재 Loyverse 값으로 덮어씀.
+ *  variant_id 행이 이미 존재해야 하므로 syncMenuFromLoyverse 이후에 실행 필요)
+ *
+ * @param {string} storeId     — store UUID from the stores table (stores 테이블의 매장 UUID)
+ * @param {string} storeApiKey — Loyverse Bearer token from stores.pos_api_key (stores.pos_api_key의 Bearer 토큰)
+ * @returns {Promise<{ success: boolean, synced?: number, total?: number, error?: string }>}
+ */
+export async function syncInventoryFromLoyverse(storeId, storeApiKey) {
+  console.log(
+    `[PosService] syncInventoryFromLoyverse start | store: ${storeId} ` +
+    `(Loyverse 재고 동기화 시작 | 매장: ${storeId})`
+  );
+
+  if (!storeApiKey) {
+    // Cannot authenticate without an API key — abort and surface the error to the caller
+    // (API 키 없이 인증 불가 — 중단 후 호출자에게 오류 노출)
+    console.error(
+      `[PosService] syncInventoryFromLoyverse aborted — storeApiKey missing | store: ${storeId} ` +
+      `(재고 동기화 중단 — storeApiKey 누락 | 매장: ${storeId})`
+    );
+    return { success: false, error: 'Missing POS API key' };
+  }
+
+  const cleanApiKey = storeApiKey.trim();
+
+  // ── Step 1: Fetch all inventory levels from Loyverse in one call ───────────
+  // GET /v1.0/inventory returns inventory_levels for every variant across all stores
+  // (GET /v1.0/inventory — 모든 매장의 모든 변형에 대한 재고 수준 반환)
+  let inventoryLevels;
+  try {
+    const response = await axios.get(`${LOYVERSE_BASE_URL}/inventory`, {
+      timeout: LOYVERSE_TIMEOUT_MS,
+      headers: {
+        Authorization:  `Bearer ${cleanApiKey}`, // Trimmed per-tenant token (공백 제거된 테넌트별 토큰)
+        'Content-Type': 'application/json',
+      },
+    });
+    inventoryLevels = response.data?.inventory_levels ?? [];
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data ?? err.message;
+    console.error(
+      `[PosService] syncInventoryFromLoyverse fetch failed | store: ${storeId} | ` +
+      `HTTP: ${status ?? 'N/A'} | detail: ${JSON.stringify(detail)} ` +
+      `(Loyverse 재고 조회 실패 | 매장: ${storeId})`
+    );
+    return { success: false, error: `Loyverse inventory fetch failed: ${err.message}` };
+  }
+
+  console.log(
+    `[PosService] syncInventoryFromLoyverse fetched | store: ${storeId} | levels: ${inventoryLevels.length} ` +
+    `(Loyverse 재고 조회 완료 | 매장: ${storeId} | 레벨 수: ${inventoryLevels.length})`
+  );
+
+  if (inventoryLevels.length === 0) {
+    // No inventory levels returned — nothing to update (반환된 재고 수준 없음 — 업데이트 대상 없음)
+    console.log(
+      `[PosService] syncInventoryFromLoyverse | no inventory levels found | store: ${storeId} ` +
+      `(재고 수준 없음 | 매장: ${storeId})`
+    );
+    return { success: true, synced: 0, total: 0 };
+  }
+
+  // ── Step 2: Update stock_quantity per variant sequentially ─────────────────
+  // Sequential loop avoids bursting the Supabase connection pool
+  // (순차 루프 — Supabase 연결 풀 과부하 방지)
+  let synced = 0;
+  for (const level of inventoryLevels) {
+    try {
+      // Update stock_quantity for the menu_items row matching this variant_id
+      // (variant_id로 일치하는 menu_items 행의 stock_quantity 업데이트)
+      const { error } = await supabase
+        .from('menu_items')
+        .update({ stock_quantity: level.in_stock })
+        .eq('variant_id', level.variant_id);
+
+      if (error) {
+        console.error(
+          `[PosService] Failed to update stock_quantity | variant_id: ${level.variant_id} | ${error.message} ` +
+          `(stock_quantity 업데이트 실패 | variant_id: ${level.variant_id} | 오류: ${error.message})`
+        );
+      } else {
+        synced++;
+      }
+    } catch (err) {
+      // Per-level unexpected error — log and continue to avoid one bad row aborting the rest
+      // (레벨별 예기치 않은 오류 — 하나의 오류가 나머지를 중단하지 않도록 로깅 후 계속)
+      console.error(
+        `[PosService] Unexpected error updating stock | variant_id: ${level.variant_id} | ${err.message} ` +
+        `(재고 업데이트 중 예기치 않은 오류 | variant_id: ${level.variant_id} | 오류: ${err.message})`
+      );
+    }
+  }
+
+  console.log(
+    `[PosService] syncInventoryFromLoyverse complete | store: ${storeId} | synced: ${synced}/${inventoryLevels.length} ` +
+    `(Loyverse 재고 동기화 완료 | 매장: ${storeId} | 동기화: ${synced}/${inventoryLevels.length})`
+  );
+
+  return { success: true, synced, total: inventoryLevels.length };
+}
+
+/**
  * Inject a reservation into the POS system.
  * STUB: Loyverse does not support reservation records — skip silently.
  * (예약을 POS 시스템에 주입.

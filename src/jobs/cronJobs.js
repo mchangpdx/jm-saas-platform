@@ -7,7 +7,7 @@
 
 import cron from 'node-cron';
 import { supabase }             from '../config/supabase.js';
-import { syncMenuFromLoyverse } from '../services/pos/posService.js';
+import { syncMenuFromLoyverse, syncInventoryFromLoyverse } from '../services/pos/posService.js';
 
 // ── Daily Menu Sync ───────────────────────────────────────────────────────────
 
@@ -57,25 +57,46 @@ cron.schedule('0 6 * * *', async () => {
   // (Loyverse API 속도 제한 방지를 위해 매장을 순차적으로 처리)
   for (const store of stores) {
     try {
-      const result = await syncMenuFromLoyverse(store.id, store.pos_api_key);
+      // ── Menu sync ─────────────────────────────────────────────────────────
+      // Runs first — inventory sync depends on variant_id rows already existing
+      // (먼저 실행 — 재고 동기화는 variant_id 행이 이미 존재해야 함)
+      const menuResult = await syncMenuFromLoyverse(store.id, store.pos_api_key);
 
-      if (result.success) {
+      if (menuResult.success) {
         console.log(
           `[CronJobs] Menu sync success | store: ${store.name} (${store.id}) | ` +
-          `synced: ${result.synced} variants from ${result.itemCount} items ` +
-          `(메뉴 동기화 성공 | 매장: ${store.name} | 동기화: ${result.itemCount}개 항목의 ${result.synced}개 변형)`
+          `synced: ${menuResult.synced} variants from ${menuResult.itemCount} items ` +
+          `(메뉴 동기화 성공 | 매장: ${store.name} | 동기화: ${menuResult.itemCount}개 항목의 ${menuResult.synced}개 변형)`
         );
       } else {
         console.error(
-          `[CronJobs] Menu sync failed | store: ${store.name} (${store.id}) | ${result.error} ` +
-          `(메뉴 동기화 실패 | 매장: ${store.name} | 오류: ${result.error})`
+          `[CronJobs] Menu sync failed | store: ${store.name} (${store.id}) | ${menuResult.error} ` +
+          `(메뉴 동기화 실패 | 매장: ${store.name} | 오류: ${menuResult.error})`
+        );
+      }
+
+      // ── Inventory sync ────────────────────────────────────────────────────
+      // Always runs after menu sync regardless of menu sync result — keeps stock current
+      // (메뉴 동기화 결과에 상관없이 항상 이후에 실행 — 재고 최신 유지)
+      const invResult = await syncInventoryFromLoyverse(store.id, store.pos_api_key);
+
+      if (invResult.success) {
+        console.log(
+          `[CronJobs] Inventory sync success | store: ${store.name} (${store.id}) | ` +
+          `synced: ${invResult.synced}/${invResult.total} levels ` +
+          `(재고 동기화 성공 | 매장: ${store.name} | 동기화: ${invResult.synced}/${invResult.total}개 레벨)`
+        );
+      } else {
+        console.error(
+          `[CronJobs] Inventory sync failed | store: ${store.name} (${store.id}) | ${invResult.error} ` +
+          `(재고 동기화 실패 | 매장: ${store.name} | 오류: ${invResult.error})`
         );
       }
     } catch (err) {
       // Unexpected error — log and continue to the next store (예기치 않은 오류 — 로깅 후 다음 매장으로 계속)
       console.error(
-        `[CronJobs] Unexpected error during menu sync | store: ${store.name} (${store.id}) | ${err.message} ` +
-        `(메뉴 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
+        `[CronJobs] Unexpected error during full sync | store: ${store.name} (${store.id}) | ${err.message} ` +
+        `(전체 동기화 중 예기치 않은 오류 | 매장: ${store.name} | 오류: ${err.message})`
       );
     }
   }
