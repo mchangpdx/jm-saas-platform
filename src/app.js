@@ -5,7 +5,9 @@ import { env }            from './config/env.js';
 import { v1Router }       from './routes/v1/index.js';
 import { paymentRouter }  from './routes/paymentRoutes.js';
 import { posRouter }      from './routes/posRoutes.js';
+import { webhookRouter }  from './routes/webhookRoutes.js';
 import { setupWebSocket } from './websocket/llmServer.js';
+import './jobs/cronJobs.js'; // Activate the daily menu sync scheduler on boot (부팅 시 일별 메뉴 동기화 스케줄러 활성화)
 
 const app = express();
 
@@ -35,6 +37,10 @@ app.use('/api/payment', paymentRouter);
 // Mount POS management router — Loyverse catalog sync and menu management
 // (POS 관리 라우터 마운트 — Loyverse 카탈로그 동기화 및 메뉴 관리)
 app.use('/api/pos', posRouter);
+
+// Mount webhook router — receives real-time Loyverse item update notifications
+// (웹훅 라우터 마운트 — 실시간 Loyverse 항목 업데이트 알림 수신)
+app.use('/api/webhooks', webhookRouter);
 
 // Root ping — infrastructure health check (루트 핑 — 인프라 헬스 체크)
 app.get('/', (_req, res) => {
