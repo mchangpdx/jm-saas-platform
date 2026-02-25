@@ -8,6 +8,7 @@ import { paymentRouter }  from './routes/paymentRoutes.js';
 import { posRouter }      from './routes/posRoutes.js';
 import { webhookRouter }  from './routes/webhookRoutes.js';
 import { authRouter }     from './routes/authRoutes.js';
+import { aiRouter }       from './routes/aiRoutes.js';
 import { setupWebSocket }             from './websocket/llmServer.js';
 import { supabase }                    from './config/supabase.js';
 import { syncInventoryFromLoyverse }   from './services/pos/posService.js';
@@ -48,6 +49,10 @@ app.use('/api/webhooks', webhookRouter);
 
 // Mount auth router — one-time Loyverse OAuth setup (일회성 Loyverse OAuth 설정 라우터 마운트)
 app.use('/api/auth', authRouter);
+
+// Mount AI router — simplified endpoints designed for LLM tool/function calling
+// (AI 라우터 마운트 — LLM 도구/함수 호출을 위해 설계된 간소화된 엔드포인트)
+app.use('/api/ai', aiRouter);
 
 // ── Root Route — OAuth callback or health check ───────────────────────────────
 //
