@@ -110,25 +110,27 @@ app.get('/', async (req, res) => {
       'OAuth 액세스 토큰 획득 — 웹훅 등록 중)'
     );
 
-    // Step 2: Register the items.update webhook using the newly obtained token
-    // (새로 획득한 토큰으로 items.update 웹훅 등록)
-    await axios.post(
-      'https://api.loyverse.com/v1.0/webhooks',
-      {
-        action: 'items.update',
-        url:    `${redirectUri}/api/webhooks/loyverse/items`,  // Validated redirectUri used consistently (검증된 redirectUri 일관 사용)
+    // Step 2: Register the items.update webhook using the newly obtained token.
+    // Loyverse requires the key "type" (NOT "action") — sending "action" causes a 400 error.
+    // Content-Type must be application/json for this endpoint.
+    // (새로 획득한 토큰으로 items.update 웹훅 등록.
+    //  Loyverse는 "type" 키를 요구함 — "action" 사용 시 400 오류 발생.
+    //  이 엔드포인트는 Content-Type: application/json 필수)
+    const webhookPayload = {
+      type: 'items.update',                                            // Loyverse required key — must be "type" not "action" (Loyverse 필수 키 — "action"이 아닌 "type" 사용)
+      url:  `${redirectUri}/api/webhooks/loyverse/items`,             // Endpoint that receives real-time item change events (실시간 항목 변경 이벤트를 수신하는 엔드포인트)
+    };
+
+    await axios.post('https://api.loyverse.com/v1.0/webhooks', webhookPayload, {
+      headers: {
+        Authorization:  `Bearer ${accessToken}`,  // Short-lived token from OAuth exchange (OAuth 교환으로 얻은 단기 토큰)
+        'Content-Type': 'application/json',
       },
-      {
-        headers: {
-          Authorization:  `Bearer ${accessToken}`,  // Short-lived token from OAuth exchange (OAuth 교환으로 얻은 단기 토큰)
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+    });
 
     console.log(
-      '[OAuth] Webhook registered successfully | action: items.update (' +
-      'OAuth 웹훅 등록 성공 | 액션: items.update)'
+      '[OAuth] Webhook registered successfully | type: items.update (' +
+      'OAuth 웹훅 등록 성공 | 타입: items.update)'
     );
 
     // Step 3: Confirm success to the user — they can now close the browser tab
