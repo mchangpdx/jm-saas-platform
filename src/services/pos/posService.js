@@ -141,6 +141,10 @@ export async function injectOrder(orderData, storeApiKey) {
     return null;
   }
 
+  // Trim whitespace from the DB value — trailing spaces cause "Invalid character in header content"
+  // (DB 값의 공백 제거 — 후행 공백이 "Invalid character in header content" 오류를 유발함)
+  const cleanApiKey = storeApiKey.trim();
+
   const payload = buildReceiptPayload(orderData);
 
   console.log(
@@ -153,7 +157,7 @@ export async function injectOrder(orderData, storeApiKey) {
     const response = await axios.post(RECEIPTS_ENDPOINT, payload, {
       timeout: LOYVERSE_TIMEOUT_MS,
       headers: {
-        Authorization:  `Bearer ${storeApiKey}`, // Dynamic per-tenant Loyverse token (테넌트별 동적 Loyverse 토큰)
+        Authorization:  `Bearer ${cleanApiKey}`, // Trimmed per-tenant Loyverse token (공백 제거된 테넌트별 Loyverse 토큰)
         'Content-Type': 'application/json',
       },
     });
