@@ -143,13 +143,15 @@ webhookRouter.post('/loyverse/receipts', (req, res) => {
     for (const receipt of receipts) {
       try {
         // Upsert receipt row; on duplicate id, overwrite with latest data
-        // (중복 id 발생 시 최신 데이터로 덮어쓰는 upsert 실행)
+        // receipt_number is the stable Loyverse identifier — fall back to receipt.id, then a timestamp-keyed surrogate
+        // (중복 id 발생 시 최신 데이터로 덮어쓰는 upsert 실행.
+        //  receipt_number가 기본 식별자 — receipt.id, 타임스탬프 대체키 순으로 폴백)
         const { error } = await supabase
           .from('loyverse_receipts')
           .upsert(
             {
-              id:             receipt.id,
-              store_id:       receipt.store_id,
+              id:             receipt.receipt_number || receipt.id || `receipt-${Date.now()}`,
+              store_id:       receipt.store_id || req.body.merchant_id, // Fall back to root merchant_id when store_id is absent inside the receipt object (receipt 객체에 store_id 없을 때 루트 merchant_id로 폴백)
               receipt_number: receipt.receipt_number,
               total_money:    receipt.total_money,
               receipt_date:   receipt.receipt_date,
