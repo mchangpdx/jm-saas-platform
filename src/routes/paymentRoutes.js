@@ -231,27 +231,34 @@ paymentRouter.get('/mock/:orderId', async (req, res) => {
     `(주문 결제 완료 처리 | 주문: ${orderId})`
   );
 
-  // ── Step 5: Respond to the customer immediately ───────────────────────────
-  // DB update is complete — payment is confirmed. Send the success page NOW.
-  // The browser receives the response before any Loyverse network I/O begins.
-  // (DB 업데이트 완료 — 결제 확정. 즉시 성공 페이지 전송.
-  //  Loyverse 네트워크 I/O 시작 전에 브라우저가 응답 수신)
+  // ── Step 5: Close the connection and deliver the success page immediately ──
+  // res.send() flushes headers and body to the socket — the browser gets the page now.
+  // All POS work happens strictly after this line; nothing below can delay the response.
+  // (res.send()가 헤더와 바디를 소켓에 플러시 — 브라우저가 즉시 페이지 수신.
+  //  이 줄 아래의 모든 POS 작업은 응답 지연에 영향 없음)
   res.status(200).send(buildSuccessPage(orderId));
 
-  // ── Step 6: Fire-and-forget POS injection ─────────────────────────────────
-  // injectOrder is NOT awaited — the promise runs independently after res.send()
-  // flushes the socket. Node.js is free to handle other requests while Loyverse
-  // processes the receipt. POS failure is non-fatal: the payment is already 'paid'.
-  // (injectOrder를 await하지 않음 — res.send() 소켓 플러시 후 프로미스가 독립적으로 실행.
-  //  Loyverse 영수증 처리 중에도 Node.js가 다른 요청 처리 가능.
+  // ── Step 6: Detach POS injection to the macro-task queue via setTimeout ───
+  // 500 ms delay ensures the network layer has fully flushed the response before
+  // any Loyverse I/O begins. POS failure is non-fatal: the payment is already 'paid'.
+  // (500ms 지연으로 Loyverse I/O 시작 전 네트워크 레이어가 응답을 완전히 플러시하도록 보장.
   //  POS 실패는 치명적이지 않음 — 결제가 이미 'paid'로 저장됨)
   const posApiKey = storeData?.pos_api_key ?? null;
-  injectOrder(order, posApiKey)
-    .catch((posErr) => {
-      // Background POS injection error — log thoroughly for ops visibility (백그라운드 POS 주입 오류 — 운영 가시성을 위해 상세 로깅)
-      console.error(
-        `[Payment] Background POS injection failed | orderId: ${orderId} | ${posErr.message} ` +
-        `(백그라운드 POS 주입 실패 | 주문: ${orderId} | 오류: ${posErr.message})`
-      );
-    });
+  setTimeout(() => {
+    injectOrder(order, posApiKey)
+      .then(() => {
+        // Background POS injection completed successfully (백그라운드 POS 주입 성공 완료)
+        console.log(
+          `[Payment] Background POS injection finished | orderId: ${orderId} ` +
+          `(백그라운드 POS 주입 완료 | 주문: ${orderId})`
+        );
+      })
+      .catch((posErr) => {
+        // Background POS injection error — log thoroughly for ops visibility (백그라운드 POS 주입 오류 — 운영 가시성을 위해 상세 로깅)
+        console.error(
+          `[Payment] Background POS injection failed | orderId: ${orderId} | ${posErr.message} ` +
+          `(백그라운드 POS 주입 실패 | 주문: ${orderId} | 오류: ${posErr.message})`
+        );
+      });
+  }, 500);
 });
