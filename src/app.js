@@ -64,19 +64,36 @@ app.get('/', async (req, res) => {
   // ── OAuth callback — exchange code → token → register webhook ─────────────
   const { code } = req.query;
 
+  // Validate all required OAuth env vars before making any network call
+  // (네트워크 호출 전에 필수 OAuth 환경 변수를 모두 검증)
+  const clientId     = process.env.LOYVERSE_CLIENT_ID;
+  const clientSecret = process.env.LOYVERSE_CLIENT_SECRET;
+  const redirectUri  = process.env.LOYVERSE_REDIRECT_URI;
+
+  if (!clientId || !clientSecret || !redirectUri) {
+    // Log exact values so missing vars are immediately visible in server output
+    // (누락된 환경 변수를 서버 출력에서 즉시 확인할 수 있도록 정확한 값 로깅)
+    console.error(
+      `[OAuth] Missing ENV variables | clientId: ${clientId} | ` +
+      `clientSecret: ${clientSecret ? '***set***' : 'MISSING'} | redirectUri: ${redirectUri} ` +
+      `(OAuth 환경 변수 누락 | clientId: ${clientId} | redirectUri: ${redirectUri})`
+    );
+    return res.status(500).send('Server Configuration Error: Missing ENV variables (LOYVERSE_CLIENT_ID, LOYVERSE_CLIENT_SECRET, or LOYVERSE_REDIRECT_URI)');
+  }
+
   console.log(
-    `[OAuth] Callback received | code: ${code.slice(0, 8)}… ` +
-    `(OAuth 콜백 수신 | 코드: ${code.slice(0, 8)}…)`
+    `[OAuth] Callback received | code: ${code.slice(0, 8)}… | clientId: ${clientId} ` +
+    `(OAuth 콜백 수신 | 코드: ${code.slice(0, 8)}… | 클라이언트 ID: ${clientId})`
   );
 
   try {
-    // Step 1: Exchange authorization code for an access token
-    // (인증 코드를 액세스 토큰으로 교환)
+    // Step 1: Exchange authorization code for an access token using validated env vars
+    // (검증된 환경 변수를 사용하여 인증 코드를 액세스 토큰으로 교환)
     const tokenRes = await axios.post('https://api.loyverse.com/oauth/token', {
       grant_type:    'authorization_code',
-      client_id:     process.env.LOYVERSE_CLIENT_ID,
-      client_secret: process.env.LOYVERSE_CLIENT_SECRET,
-      redirect_uri:  process.env.LOYVERSE_REDIRECT_URI,
+      client_id:     clientId,
+      client_secret: clientSecret,
+      redirect_uri:  redirectUri,
       code,
     });
 
@@ -93,7 +110,7 @@ app.get('/', async (req, res) => {
       'https://api.loyverse.com/v1.0/webhooks',
       {
         action: 'items.update',
-        url:    `${process.env.LOYVERSE_REDIRECT_URI}/api/webhooks/loyverse/items`,
+        url:    `${redirectUri}/api/webhooks/loyverse/items`,  // Validated redirectUri used consistently (검증된 redirectUri 일관 사용)
       },
       {
         headers: {
