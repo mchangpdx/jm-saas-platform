@@ -306,13 +306,24 @@ export async function syncMenuFromLoyverse(storeId, storeApiKey) {
   for (const item of loyverseItems) {
     const variants = item.variants ?? [];
     for (const variant of variants) {
+      // Store-specific price overrides default_price when present in variant.stores[0].price
+      // (variant.stores[0].price가 있으면 매장별 가격이 default_price보다 우선 적용됨)
+      const storeOverride = (variant.stores && variant.stores.length > 0)
+        ? variant.stores[0].price
+        : null;
+      // Use store override first, then default_price, then 0 as last resort
+      // (매장별 가격 우선 → default_price → 최후 수단으로 0 사용)
+      const finalPrice = (storeOverride !== null && storeOverride !== undefined)
+        ? storeOverride
+        : (variant.default_price || 0);
+
       rows.push({
         store_id:   storeId,
-        item_id:    item.id,                         // Loyverse item UUID (Loyverse 항목 UUID)
-        variant_id: variant.variant_id,              // Loyverse variant UUID for receipt line items (영수증 라인 항목용 UUID)
-        name:       item.item_name,                  // Display name used to match order items (주문 항목 매칭에 사용되는 표시명)
-        price:      parseFloat(variant.default_price ?? variant.price ?? 0),  // Loyverse stores unit price in default_price; fall back to price for safety (Loyverse는 단가를 default_price에 저장 — 안전을 위해 price로 폴백)
-        category:   item.category_id ?? null,        // Optional category ID for filtering (선택적 카테고리 ID)
+        item_id:    item.id,                    // Loyverse item UUID (Loyverse 항목 UUID)
+        variant_id: variant.variant_id,         // Loyverse variant UUID for receipt line items (영수증 라인 항목용 UUID)
+        name:       item.item_name,             // Display name used to match order items (주문 항목 매칭에 사용되는 표시명)
+        price:      parseFloat(finalPrice),     // Resolved price: store override → default_price → 0 (매장별 가격 → default_price → 0 순으로 결정된 단가)
+        category:   item.category_id ?? null,   // Optional category ID for filtering (선택적 카테고리 ID)
       });
     }
   }
