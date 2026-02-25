@@ -7,7 +7,8 @@
 //  프로덕션에서는 목 엔드포인트를 실제 PG 웹훅 핸들러로 교체)
 
 import { Router } from 'express';
-import { supabase } from '../config/supabase.js';
+import { supabase }    from '../config/supabase.js';
+import { injectOrder } from '../services/pos/posService.js';
 
 export const paymentRouter = Router();
 
@@ -120,34 +121,105 @@ function buildErrorPage(orderId, reason) {
  * GET /api/payment/mock/:orderId
  *
  * Mock payment gateway callback — simulates a successful card payment.
- * Steps:
- *   1. Extract orderId from URL params (URL 파라미터에서 orderId 추출)
- *   2. Update orders.status to 'paid' in Supabase (Supabase orders.status를 'paid'로 업데이트)
- *   3. Return a success HTML page or an error HTML page (성공/오류 HTML 페이지 반환)
  *
- * This endpoint is the target of the payment link sent to the customer via email/SMS.
+ * Pipeline (파이프라인):
+ *   1. Fetch the current order row to read status and store_id
+ *      (현재 주문 행 조회 — status와 store_id 읽기)
+ *   2. IDEMPOTENCY CHECK — if status is already 'paid', return the success page
+ *      immediately without touching the DB or POS again. Protects against
+ *      double-clicks and duplicate webhook deliveries.
+ *      (멱등성 확인 — status가 이미 'paid'이면 DB·POS 재처리 없이 성공 페이지 즉시 반환.
+ *       더블클릭 및 중복 웹훅 방지)
+ *   3. Fetch the store row using order.store_id to obtain the dynamic pos_api_key.
+ *      The POS key lives in the DB, never in .env.
+ *      (order.store_id로 매장 행 조회 → 동적 pos_api_key 획득.
+ *       POS 키는 DB에 있음 — .env에 절대 없음)
+ *   4. Update orders.status → 'paid' (orders.status → 'paid' 업데이트)
+ *   5. Inject the order into Loyverse POS via posService.injectOrder().
+ *      POS failure is non-fatal — the customer already paid; log and continue.
+ *      (posService.injectOrder()로 Loyverse POS에 주문 주입.
+ *       POS 실패는 치명적이지 않음 — 고객은 이미 결제함 — 로깅 후 계속)
+ *   6. Return success HTML page to the customer's browser
+ *      (고객 브라우저에 성공 HTML 페이지 반환)
+ *
  * In production, replace with a real PG webhook that validates a signature before updating.
- * (이 엔드포인트는 이메일/SMS로 전송된 결제 링크의 대상.
- *  프로덕션에서는 서명 검증 후 업데이트하는 실제 PG 웹훅으로 교체)
+ * (프로덕션에서는 서명 검증 후 업데이트하는 실제 PG 웹훅으로 교체)
  */
 paymentRouter.get('/mock/:orderId', async (req, res) => {
   const { orderId } = req.params; // Order ID from the payment link URL (결제 링크 URL의 주문 ID)
 
   console.log(
-    `[Payment] Mock callback received | orderId: ${orderId} (목 결제 콜백 수신 | 주문: ${orderId})`
+    `[Payment] Mock callback received | orderId: ${orderId} ` +
+    `(목 결제 콜백 수신 | 주문: ${orderId})`
   );
 
-  // Update the order status to 'paid' in the database (데이터베이스에서 주문 상태를 'paid'로 업데이트)
-  const { error } = await supabase
+  // ── Step 1: Fetch the current order row ────────────────────────────────────
+  // Select all columns so we can pass the full row to the POS injector later.
+  // (이후 POS 주입에 전체 행을 전달할 수 있도록 모든 컬럼 조회)
+  const { data: order, error: fetchError } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('id', orderId)
+    .single();
+
+  if (fetchError || !order) {
+    // Order not found — could be a stale or tampered link (주문 없음 — 오래된 링크 또는 변조된 링크)
+    console.error(
+      `[Payment] Order not found | orderId: ${orderId} | ${fetchError?.message ?? 'no row returned'} ` +
+      `(주문 없음 | 주문: ${orderId} | 오류: ${fetchError?.message ?? '행 없음'})`
+    );
+    return res
+      .status(404)
+      .send(buildErrorPage(orderId, 'Order not found. The link may have expired.'));
+  }
+
+  // ── Step 2: Idempotency guard ──────────────────────────────────────────────
+  // If the order is already paid, return the success page without any side effects.
+  // This handles: user double-clicking the email link, browser retries, duplicate PG callbacks.
+  // (이미 결제된 주문 — 부작용 없이 성공 페이지 반환.
+  //  이메일 링크 더블클릭, 브라우저 재시도, 중복 PG 콜백 처리)
+  if (order.status === 'paid') {
+    console.log(
+      `[Payment] Order already paid — returning success page without re-processing | orderId: ${orderId} ` +
+      `(이미 결제된 주문 — 재처리 없이 성공 페이지 반환 | 주문: ${orderId})`
+    );
+    return res.status(200).send(buildSuccessPage(orderId));
+  }
+
+  // ── Step 3: Fetch store row for dynamic POS API key ────────────────────────
+  // The pos_api_key is stored per-tenant in the stores table, not in .env.
+  // This allows each store to use its own Loyverse account independently.
+  // (pos_api_key는 테넌트별로 stores 테이블에 저장 — .env 아님.
+  //  각 매장이 독립된 Loyverse 계정을 사용할 수 있음)
+  const { data: storeData, error: storeError } = await supabase
+    .from('stores')
+    .select('id, pos_api_key, pos_type')
+    .eq('id', order.store_id)
+    .single();
+
+  if (storeError || !storeData) {
+    // Store not found — log but do not block payment; POS injection will be skipped
+    // (매장 없음 — 로깅 후 결제 진행 — POS 주입 건너뜀)
+    console.error(
+      `[Payment] Store not found for order | orderId: ${orderId} | store_id: ${order.store_id} | ` +
+      `${storeError?.message ?? 'no row returned'} ` +
+      `(주문의 매장 없음 | 주문: ${orderId} | 매장: ${order.store_id})`
+    );
+  }
+
+  // ── Step 4: Mark order as paid ─────────────────────────────────────────────
+  // Only reached when the current status is NOT 'paid' — prevents double updates.
+  // (현재 status가 'paid'가 아닐 때만 도달 — 이중 업데이트 방지)
+  const { error: updateError } = await supabase
     .from('orders')
     .update({ status: 'paid' })
     .eq('id', orderId);
 
-  if (error) {
-    // Log the DB error and return a user-facing error page (DB 오류 로깅 및 사용자용 오류 페이지 반환)
+  if (updateError) {
+    // DB update failed — log and return error page to the customer (DB 업데이트 실패 — 로깅 후 고객에게 오류 페이지 반환)
     console.error(
-      `[Payment] DB update failed | orderId: ${orderId} | ${error.message} ` +
-      `(DB 업데이트 실패 | 주문: ${orderId} | 오류: ${error.message})`
+      `[Payment] DB update failed | orderId: ${orderId} | ${updateError.message} ` +
+      `(DB 업데이트 실패 | 주문: ${orderId} | 오류: ${updateError.message})`
     );
     return res
       .status(500)
@@ -155,10 +227,29 @@ paymentRouter.get('/mock/:orderId', async (req, res) => {
   }
 
   console.log(
-    `[Payment] Order marked as paid | orderId: ${orderId} (주문 결제 완료 처리 | 주문: ${orderId})`
+    `[Payment] Order marked as paid | orderId: ${orderId} ` +
+    `(주문 결제 완료 처리 | 주문: ${orderId})`
   );
 
-  // Return the success page — the customer sees this in their browser after clicking the link
-  // (고객이 링크 클릭 후 브라우저에서 보는 성공 페이지 반환)
+  // ── Step 5: Inject order into Loyverse POS ─────────────────────────────────
+  // Fire-and-await but isolate the result — POS failure must never affect the customer response.
+  // The order is already confirmed in the DB; POS is a downstream notification only.
+  // (실행 후 대기 — POS 실패가 고객 응답에 영향을 주면 안 됨.
+  //  주문은 DB에서 이미 확정됨 — POS는 다운스트림 알림에 불과함)
+  try {
+    const posApiKey = storeData?.pos_api_key ?? null;
+    await injectOrder(order, posApiKey);
+  } catch (posErr) {
+    // Unexpected error from posService — log but do not affect the customer-facing response
+    // (posService 예상치 못한 오류 — 로깅 후 고객 응답에 영향 없음)
+    console.error(
+      `[Payment] POS injection threw unexpectedly | orderId: ${orderId} | ${posErr.message} ` +
+      `(POS 주입 예상치 못한 오류 | 주문: ${orderId} | 오류: ${posErr.message})`
+    );
+  }
+
+  // ── Step 6: Return success page to the customer ────────────────────────────
+  // Reached regardless of POS injection outcome — payment is confirmed.
+  // (POS 주입 결과와 무관하게 도달 — 결제는 확정됨)
   return res.status(200).send(buildSuccessPage(orderId));
 });
