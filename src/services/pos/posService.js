@@ -364,7 +364,7 @@ export async function syncMenuFromLoyverse(storeId, storeApiKey) {
     }
   }
   const menuCache = Object.entries(priceByName)
-    .map(([name, price]) => `${name} — ₩${price.toLocaleString()}`)
+    .map(([name, price]) => `${name} - $${price.toFixed(2)}`)  // Dollar sign for US market; toFixed(2) ensures consistent decimal format (미국 시장용 달러 기호 — toFixed(2)로 소수점 형식 통일)
     .join('\n');
 
   const { error: cacheError } = await supabase
