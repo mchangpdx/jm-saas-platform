@@ -73,16 +73,19 @@ function mapItemToLineItem(item, unitPrice, menuRecord) {
  * When menuLookup is provided, each line item is matched by name (case-insensitive)
  * to a catalog record and uses the real variant_id, item_id, and price.
  * When menuLookup is null (catalog not yet synced), prices are approximated.
+ * paymentTypeId is required by Loyverse — omitting it causes MISSING_REQUIRED_PARAMETER.
  *
  * (주문 데이터에서 Loyverse POST /receipts 전체 페이로드 생성.
  *  menuLookup이 있으면 항목명(대소문자 무시)으로 카탈로그 레코드 매칭 후 실제 ID·가격 사용.
- *  없으면 총액 균등 분배 근사값 사용)
+ *  없으면 총액 균등 분배 근사값 사용.
+ *  paymentTypeId는 Loyverse 필수 필드 — 누락 시 MISSING_REQUIRED_PARAMETER 오류 발생)
  *
- * @param {object}   orderData  — full order row from Supabase (Supabase의 전체 주문 행)
- * @param {Map|null} menuLookup — lowercase name → menu record map, or null (소문자 이름 → 메뉴 레코드 맵 또는 null)
+ * @param {object}      orderData     — full order row from Supabase (Supabase의 전체 주문 행)
+ * @param {Map|null}    menuLookup    — lowercase name → menu record map, or null (소문자 이름 → 메뉴 레코드 맵 또는 null)
+ * @param {string|null} paymentTypeId — Loyverse payment_type_id fetched from /payment_types (Loyverse /payment_types에서 조회한 결제 유형 ID)
  * @returns {object} Loyverse receipt request body (Loyverse 영수증 요청 바디)
  */
-function buildReceiptPayload(orderData, menuLookup) {
+function buildReceiptPayload(orderData, menuLookup, paymentTypeId) {
   const items      = orderData.items ?? [];
   const totalUnits = items.reduce((sum, i) => sum + (i.quantity ?? 1), 0);
   const totalAmount = parseFloat(orderData.total_amount ?? 0);
@@ -109,9 +112,8 @@ function buildReceiptPayload(orderData, menuLookup) {
     total_tax:      0,               // Tax handling deferred to post-MVP (세금 처리는 MVP 이후로 지연)
     payments: [
       {
-        // TODO: replace with real Loyverse payment_type_id from store config (매장 설정의 실제 payment_type_id로 교체)
-        // payment_type_id: 'loyverse-payment-type-uuid',
-        money_amount: totalAmount,   // Full payment amount (전체 결제 금액)
+        payment_type_id: paymentTypeId,  // Required by Loyverse — fetched from /payment_types before this call (Loyverse 필수 — 호출 전 /payment_types에서 조회)
+        money_amount:    totalAmount,    // Full payment amount (전체 결제 금액)
       },
     ],
   };
@@ -191,7 +193,32 @@ export async function injectOrder(orderData, storeApiKey) {
     );
   }
 
-  const payload = buildReceiptPayload(orderData, menuLookup);
+  // Fetch available payment types to obtain the required payment_type_id for the receipt
+  // (영수증에 필요한 payment_type_id를 얻기 위해 사용 가능한 결제 유형 조회)
+  let paymentTypeId = null;
+  try {
+    const paymentTypesResponse = await axios.get(`${LOYVERSE_BASE_URL}/payment_types`, {
+      timeout: LOYVERSE_TIMEOUT_MS,
+      headers: {
+        Authorization:  `Bearer ${cleanApiKey}`,  // Same per-tenant token used for all Loyverse calls (모든 Loyverse 호출에 사용되는 동일한 테넌트별 토큰)
+        'Content-Type': 'application/json',
+      },
+    });
+    paymentTypeId = paymentTypesResponse.data?.payment_types?.[0]?.id ?? null;
+    console.log(
+      `[PosService] Payment type fetched | orderId: ${orderData.id} | paymentTypeId: ${paymentTypeId} ` +
+      `(결제 유형 조회 완료 | 주문: ${orderData.id} | 결제 유형 ID: ${paymentTypeId})`
+    );
+  } catch (err) {
+    // Payment type fetch failed — log clearly; Loyverse will reject the receipt without the ID
+    // (결제 유형 조회 실패 — 명확하게 로깅 — ID 없으면 Loyverse가 영수증 거절)
+    console.error(
+      `[PosService] Payment type fetch failed | orderId: ${orderData.id} | ${err.message} ` +
+      `(결제 유형 조회 실패 | 주문: ${orderData.id} | 오류: ${err.message})`
+    );
+  }
+
+  const payload = buildReceiptPayload(orderData, menuLookup, paymentTypeId);
 
   console.log(
     `[PosService] Posting to Loyverse /receipts | items: ${payload.line_items.length} | ` +

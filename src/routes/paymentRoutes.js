@@ -240,20 +240,23 @@ paymentRouter.get('/mock/:orderId', async (req, res) => {
   //  POS 주입은 응답 플러시 후 백그라운드에서 실행)
   res.status(200).send(buildSuccessPage(orderId));
 
-  // ── Step 6: Fire-and-forget POS injection ─────────────────────────────────
-  // Called WITHOUT await — runs entirely after the HTTP response is already sent.
-  // .catch() captures any unhandled rejection so Node never logs an unhandled promise warning.
-  // POS failure at this point is non-fatal: the payment record is already 'paid' in the DB.
-  // (await 없이 호출 — HTTP 응답 전송 후 완전히 실행됨.
-  //  .catch()로 미처리 거절 캡처 — Node 경고 방지.
-  //  이 시점의 POS 실패는 치명적이지 않음 — 결제 기록이 DB에 이미 'paid'로 저장됨)
+  // ── Step 6: True fire-and-forget POS injection via setTimeout ────────────
+  // setTimeout(fn, 0) pushes the callback to the next iteration of the event loop,
+  // fully detaching POS work from this HTTP request's call stack.
+  // The customer's browser receives the success page before any Loyverse I/O begins.
+  // POS failure is non-fatal: the payment record is already 'paid' in the DB.
+  // (setTimeout(fn, 0)으로 콜백을 다음 이벤트 루프 반복으로 밀어넣어
+  //  POS 작업을 HTTP 요청 콜 스택에서 완전히 분리.
+  //  Loyverse I/O 시작 전에 고객 브라우저에 성공 페이지 전달.
+  //  POS 실패는 치명적이지 않음 — 결제 기록이 DB에 이미 'paid'로 저장됨)
   const posApiKey = storeData?.pos_api_key ?? null;
-  injectOrder(order, posApiKey)
-    .catch((posErr) => {
+  setTimeout(() => {
+    injectOrder(order, posApiKey).catch((posErr) => {
       // Background POS injection error — log thoroughly for ops visibility (백그라운드 POS 주입 오류 — 운영 가시성을 위해 상세 로깅)
       console.error(
         `[Payment] Background POS injection failed | orderId: ${orderId} | ${posErr.message} ` +
         `(백그라운드 POS 주입 실패 | 주문: ${orderId} | 오류: ${posErr.message})`
       );
     });
+  }, 0);
 });
