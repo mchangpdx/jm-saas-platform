@@ -17,9 +17,13 @@
  * @returns {Promise<{ paymentUrl: string }>}
  */
 export async function createPaymentLink(orderId, amount, storeId) {
-  // Build a mock URL that encodes the key identifiers for easy debugging
-  // (디버깅 편의를 위해 주요 식별자를 인코딩한 목 URL 생성)
-  const paymentUrl = `https://pay.maverick.com/mock-link-${orderId}`;
+  // Build a clickable local URL so the payment flow can be completed end-to-end in development.
+  // APP_BASE_URL should be set to the public-facing origin in production (e.g. https://yourdomain.com).
+  // Falls back to http://localhost:3000 when the variable is absent.
+  // (로컬에서 전체 결제 흐름을 완성할 수 있는 클릭 가능한 URL 생성.
+  //  프로덕션에서는 APP_BASE_URL을 공개 도메인으로 설정해야 함 — 없으면 localhost:3000으로 폴백)
+  const baseUrl    = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+  const paymentUrl = `${baseUrl}/api/payment/mock/${orderId}`;
 
   console.log(
     `[MaverickPG] createPaymentLink | orderId: ${orderId} | amount: ${amount} | ` +

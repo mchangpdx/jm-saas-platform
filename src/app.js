@@ -3,6 +3,7 @@ import './config/env.js'; // Validate env vars before anything else (다른 모�
 import express from 'express';
 import { env }            from './config/env.js';
 import { v1Router }       from './routes/v1/index.js';
+import { paymentRouter }  from './routes/paymentRoutes.js';
 import { setupWebSocket } from './websocket/llmServer.js';
 
 const app = express();
@@ -25,6 +26,10 @@ app.use((_req, _res, next) => {
 
 // Mount versioned API router (버전 관리 API 라우터 마운트)
 app.use('/api/v1', v1Router);
+
+// Mount payment callback router — handles mock PG redirect and order status updates
+// (결제 콜백 라우터 마운트 — 목 PG 리다이렉트 및 주문 상태 업데이트 처리)
+app.use('/api/payment', paymentRouter);
 
 // Root ping — infrastructure health check (루트 핑 — 인프라 헬스 체크)
 app.get('/', (_req, res) => {
