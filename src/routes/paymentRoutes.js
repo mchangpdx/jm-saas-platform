@@ -193,7 +193,7 @@ paymentRouter.get('/mock/:orderId', async (req, res) => {
   //  각 매장이 독립된 Loyverse 계정을 사용할 수 있음)
   const { data: storeData, error: storeError } = await supabase
     .from('stores')
-    .select('id, pos_api_key, pos_type')
+    .select('pos_api_key')
     .eq('id', order.store_id)
     .single();
 
