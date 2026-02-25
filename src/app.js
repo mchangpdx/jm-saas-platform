@@ -117,8 +117,9 @@ app.get('/', async (req, res) => {
     //  Loyverse는 "type" 키를 요구함 — "action" 사용 시 400 오류 발생.
     //  이 엔드포인트는 Content-Type: application/json 필수)
     const webhookPayload = {
-      type: 'items.update',                                            // Loyverse required key — must be "type" not "action" (Loyverse 필수 키 — "action"이 아닌 "type" 사용)
-      url:  `${redirectUri}/api/webhooks/loyverse/items`,             // Endpoint that receives real-time item change events (실시간 항목 변경 이벤트를 수신하는 엔드포인트)
+      type:   'items.update',                                          // Loyverse required key — must be "type" not "action" (Loyverse 필수 키 — "action"이 아닌 "type" 사용)
+      url:    `${redirectUri}/api/webhooks/loyverse/items`,           // Endpoint that receives real-time item change events (실시간 항목 변경 이벤트를 수신하는 엔드포인트)
+      status: 'ENABLED',                                              // Required by Loyverse — explicitly activates the webhook (Loyverse 필수 — 웹훅을 명시적으로 활성화)
     };
 
     await axios.post('https://api.loyverse.com/v1.0/webhooks', webhookPayload, {
