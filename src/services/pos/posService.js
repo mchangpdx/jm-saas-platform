@@ -80,12 +80,13 @@ function mapItemToLineItem(item, unitPrice, menuRecord) {
  *  없으면 총액 균등 분배 근사값 사용.
  *  paymentTypeId는 Loyverse 필수 필드 — 누락 시 MISSING_REQUIRED_PARAMETER 오류 발생)
  *
- * @param {object}      orderData     — full order row from Supabase (Supabase의 전체 주문 행)
- * @param {Map|null}    menuLookup    — lowercase name → menu record map, or null (소문자 이름 → 메뉴 레코드 맵 또는 null)
- * @param {string|null} paymentTypeId — Loyverse payment_type_id fetched from /payment_types (Loyverse /payment_types에서 조회한 결제 유형 ID)
+ * @param {object}      orderData       — full order row from Supabase (Supabase의 전체 주문 행)
+ * @param {Map|null}    menuLookup      — lowercase name → menu record map, or null (소문자 이름 → 메뉴 레코드 맵 또는 null)
+ * @param {string|null} paymentTypeId   — Loyverse payment_type_id fetched from /payment_types (Loyverse /payment_types에서 조회한 결제 유형 ID)
+ * @param {string|null} loyverseStoreId — Loyverse internal store ID fetched from /stores (Loyverse /stores에서 조회한 내부 매장 ID)
  * @returns {object} Loyverse receipt request body (Loyverse 영수증 요청 바디)
  */
-function buildReceiptPayload(orderData, menuLookup, paymentTypeId) {
+function buildReceiptPayload(orderData, menuLookup, paymentTypeId, loyverseStoreId) {
   const items      = orderData.items ?? [];
   const totalUnits = items.reduce((sum, i) => sum + (i.quantity ?? 1), 0);
   const totalAmount = parseFloat(orderData.total_amount ?? 0);
@@ -100,18 +101,26 @@ function buildReceiptPayload(orderData, menuLookup, paymentTypeId) {
     return mapItemToLineItem(item, unitPrice, menuRecord);
   });
 
+  // Calculate total directly from mapped line_items — avoids undefined from orderData.total_amount
+  // (매핑된 line_items에서 직접 총액 계산 — orderData.total_amount의 undefined 방지)
+  const calculatedTotal = parseFloat(
+    lineItems.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)
+  );
+
   // Flat receipt object sent directly to POST /receipts — no wrapper array
   // (POST /receipts에 직접 전송되는 단일 평면 영수증 객체 — 배열 래퍼 없음)
   return {
-    store_id:     orderData.store_id,              // Required by Loyverse — identifies the tenant store (Loyverse 필수 — 테넌트 매장 식별)
+    store_id:     loyverseStoreId,                 // Loyverse internal store ID — NOT the Supabase UUID (Loyverse 내부 매장 ID — Supabase UUID가 아님)
+    receipt_type: 'SALE',                          // Required by Loyverse to mark this as a completed sale (완료된 판매로 표시하기 위한 Loyverse 필수 필드)
     order:        orderData.id.toString(),         // External order reference for traceability (추적 가능성을 위한 외부 주문 참조)
     source:       'AI_Voice_Assistant',            // Identifies this receipt as AI-generated (AI 생성 영수증임을 식별)
     receipt_date: new Date().toISOString(),        // Timestamp of receipt creation (영수증 생성 타임스탬프)
     line_items:   lineItems,                       // Mapped order items with variant_id when available (variant_id 포함 매핑된 주문 항목)
+    total_money:  calculatedTotal,                 // Total derived from line_items — reliable even when orderData.total_amount is undefined (line_items에서 산출한 총액 — orderData.total_amount가 undefined여도 안전)
     payments: [
       {
         payment_type_id: paymentTypeId,            // Required by Loyverse — fetched from /payment_types (Loyverse 필수 — /payment_types에서 조회)
-        money_amount:    totalAmount,              // Full payment amount (전체 결제 금액)
+        money_amount:    calculatedTotal,          // Must match total_money — both derived from line_items (total_money와 일치 필수 — 둘 다 line_items에서 산출)
       },
     ],
   };
@@ -216,12 +225,37 @@ export async function injectOrder(orderData, storeApiKey) {
     );
   }
 
-  const payload = buildReceiptPayload(orderData, menuLookup, paymentTypeId);
+  // Fetch the Loyverse internal store ID — different from the Supabase store UUID
+  // (Loyverse 내부 매장 ID 조회 — Supabase 매장 UUID와 다름)
+  let loyverseStoreId = null;
+  try {
+    const storesRes = await axios.get(`${LOYVERSE_BASE_URL}/stores`, {
+      timeout: LOYVERSE_TIMEOUT_MS,
+      headers: {
+        Authorization:  `Bearer ${cleanApiKey}`,  // Same per-tenant token used for all Loyverse calls (모든 Loyverse 호출에 사용되는 동일한 테넌트별 토큰)
+        'Content-Type': 'application/json',
+      },
+    });
+    loyverseStoreId = storesRes.data?.stores?.[0]?.id ?? null;
+    console.log(
+      `[PosService] Loyverse store ID fetched | orderId: ${orderData.id} | loyverseStoreId: ${loyverseStoreId} ` +
+      `(Loyverse 내부 매장 ID 조회 완료 | 주문: ${orderData.id} | Loyverse 매장 ID: ${loyverseStoreId})`
+    );
+  } catch (err) {
+    // Store ID fetch failed — receipt will be rejected by Loyverse without a valid store_id
+    // (매장 ID 조회 실패 — 유효한 store_id 없으면 Loyverse가 영수증 거절)
+    console.error(
+      `[PosService] Loyverse store ID fetch failed | orderId: ${orderData.id} | ${err.message} ` +
+      `(Loyverse 매장 ID 조회 실패 | 주문: ${orderData.id} | 오류: ${err.message})`
+    );
+  }
+
+  const payload = buildReceiptPayload(orderData, menuLookup, paymentTypeId, loyverseStoreId);
 
   console.log(
     `[PosService] Posting to Loyverse /receipts | items: ${payload.line_items.length} | ` +
-    `total: ${payload.total_money} ` +
-    `(Loyverse /receipts에 POST | 항목 수: ${payload.line_items.length} | 합계: ${payload.total_money})`
+    `total: ${payload.total_money} | loyverseStoreId: ${loyverseStoreId} ` +
+    `(Loyverse /receipts에 POST | 항목 수: ${payload.line_items.length} | 합계: ${payload.total_money} | Loyverse 매장 ID: ${loyverseStoreId})`
   );
 
   try {
