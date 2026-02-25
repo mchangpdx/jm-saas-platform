@@ -311,7 +311,7 @@ export async function syncMenuFromLoyverse(storeId, storeApiKey) {
         item_id:    item.id,                         // Loyverse item UUID (Loyverse 항목 UUID)
         variant_id: variant.variant_id,              // Loyverse variant UUID for receipt line items (영수증 라인 항목용 UUID)
         name:       item.item_name,                  // Display name used to match order items (주문 항목 매칭에 사용되는 표시명)
-        price:      parseFloat(variant.price ?? 0),  // Unit price in store currency (매장 통화 단가)
+        price:      parseFloat(variant.default_price ?? variant.price ?? 0),  // Loyverse stores unit price in default_price; fall back to price for safety (Loyverse는 단가를 default_price에 저장 — 안전을 위해 price로 폴백)
         category:   item.category_id ?? null,        // Optional category ID for filtering (선택적 카테고리 ID)
       });
     }
