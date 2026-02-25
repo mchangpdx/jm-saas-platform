@@ -100,20 +100,18 @@ function buildReceiptPayload(orderData, menuLookup, paymentTypeId) {
     return mapItemToLineItem(item, unitPrice, menuRecord);
   });
 
+  // Flat receipt object sent directly to POST /receipts — no wrapper array
+  // (POST /receipts에 직접 전송되는 단일 평면 영수증 객체 — 배열 래퍼 없음)
   return {
-    // source marks this receipt as externally created, not from Loyverse POS hardware
-    // (source는 이 영수증이 Loyverse POS 하드웨어가 아닌 외부에서 생성되었음을 표시)
-    source:       'EXTERNAL',
-    receipt_date: orderData.created_at ?? new Date().toISOString(), // Use original order time (원래 주문 시간 사용)
-    note:         `JM Voice Order | order_id: ${orderData.id} | customer: ${orderData.customer_phone ?? 'unknown'}`,
-    line_items:   lineItems,
-    total_money:  totalAmount,       // Confirmed order total (확정된 주문 총액)
-    total_discount: 0,               // No discounts in MVP (MVP에서 할인 없음)
-    total_tax:      0,               // Tax handling deferred to post-MVP (세금 처리는 MVP 이후로 지연)
+    store_id:     orderData.store_id,              // Required by Loyverse — identifies the tenant store (Loyverse 필수 — 테넌트 매장 식별)
+    order:        orderData.id.toString(),         // External order reference for traceability (추적 가능성을 위한 외부 주문 참조)
+    source:       'AI_Voice_Assistant',            // Identifies this receipt as AI-generated (AI 생성 영수증임을 식별)
+    receipt_date: new Date().toISOString(),        // Timestamp of receipt creation (영수증 생성 타임스탬프)
+    line_items:   lineItems,                       // Mapped order items with variant_id when available (variant_id 포함 매핑된 주문 항목)
     payments: [
       {
-        payment_type_id: paymentTypeId,  // Required by Loyverse — fetched from /payment_types before this call (Loyverse 필수 — 호출 전 /payment_types에서 조회)
-        money_amount:    totalAmount,    // Full payment amount (전체 결제 금액)
+        payment_type_id: paymentTypeId,            // Required by Loyverse — fetched from /payment_types (Loyverse 필수 — /payment_types에서 조회)
+        money_amount:    totalAmount,              // Full payment amount (전체 결제 금액)
       },
     ],
   };
