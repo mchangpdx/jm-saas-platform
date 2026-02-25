@@ -115,11 +115,16 @@ webhookRouter.post('/loyverse/items', (req, res) => {
 
 /**
  * Receive real-time receipt update notifications from Loyverse.
- * Acknowledges immediately and triggers a background menu re-sync.
- * (Loyverse로부터 실시간 영수증 업데이트 알림 수신. 즉시 확인 후 백그라운드 메뉴 재동기화 트리거)
+ *
+ * Pipeline (파이프라인):
+ *   1. Immediately return 200 OK so Loyverse does not retry or time out
+ *      (즉시 200 OK 반환 — Loyverse 재시도 및 타임아웃 방지)
+ *   2. In the background, loop through req.body.receipts and upsert each
+ *      record into the loyverse_receipts table, keyed on receipt id
+ *      (백그라운드에서 req.body.receipts를 순회하며 loyverse_receipts 테이블에 upsert)
  */
 webhookRouter.post('/loyverse/receipts', (req, res) => {
-  // Log the raw payload for debugging (디버깅을 위해 원시 페이로드 로깅)
+  // Log incoming payload keys for debugging (디버깅을 위해 수신 페이로드 키 로깅)
   console.log(
     '[WebhookRoute] Loyverse receipt update received | payload keys: ' +
     `${Object.keys(req.body ?? {}).join(', ')} ` +
@@ -130,9 +135,59 @@ webhookRouter.post('/loyverse/receipts', (req, res) => {
   // (즉시 확인 — Loyverse 재시도 방지를 위해 빠른 200 응답 필수)
   res.status(200).send('OK');
 
-  // Fire-and-forget background sync (파이어 앤 포겟 백그라운드 동기화)
-  runBackgroundSync('receipts.update webhook').catch((err) => {
-    console.error(`[WebhookRoute] Unhandled error in runBackgroundSync | ${err.message} (runBackgroundSync 미처리 오류)`);
+  // Fire-and-forget — parse receipts array and upsert into loyverse_receipts
+  // (파이어 앤 포겟 — receipts 배열을 파싱하여 loyverse_receipts에 upsert)
+  const receipts = req.body?.receipts ?? [];
+
+  (async () => {
+    for (const receipt of receipts) {
+      try {
+        // Upsert receipt row; on duplicate id, overwrite with latest data
+        // (중복 id 발생 시 최신 데이터로 덮어쓰는 upsert 실행)
+        const { error } = await supabase
+          .from('loyverse_receipts')
+          .upsert(
+            {
+              id:             receipt.id,
+              store_id:       receipt.store_id,
+              receipt_number: receipt.receipt_number,
+              total_money:    receipt.total_money,
+              receipt_date:   receipt.receipt_date,
+              raw_data:       receipt,            // Store full payload for future reference (미래 참조를 위해 전체 페이로드 저장)
+            },
+            { onConflict: 'id' }
+          );
+
+        if (error) {
+          console.error(
+            `[WebhookRoute] Failed to upsert receipt | id: ${receipt.id} | ${error.message} ` +
+            `(영수증 upsert 실패 | id: ${receipt.id} | 오류: ${error.message})`
+          );
+        } else {
+          console.log(
+            `[WebhookRoute] Receipt upserted | id: ${receipt.id} | number: ${receipt.receipt_number} ` +
+            `(영수증 upsert 성공 | id: ${receipt.id} | 번호: ${receipt.receipt_number})`
+          );
+        }
+      } catch (err) {
+        // Unexpected per-receipt error — log and continue to next receipt
+        // (예기치 않은 영수증별 오류 — 로깅 후 다음 영수증으로 계속)
+        console.error(
+          `[WebhookRoute] Unexpected error upserting receipt | id: ${receipt.id} | ${err.message} ` +
+          `(영수증 upsert 중 예기치 않은 오류 | id: ${receipt.id} | 오류: ${err.message})`
+        );
+      }
+    }
+
+    console.log(
+      `[WebhookRoute] Receipt webhook processing complete | count: ${receipts.length} ` +
+      `(영수증 웹훅 처리 완료 | 건수: ${receipts.length})`
+    );
+  })().catch((err) => {
+    console.error(
+      `[WebhookRoute] Unhandled error in receipts background handler | ${err.message} ` +
+      `(영수증 백그라운드 핸들러 미처리 오류 | ${err.message})`
+    );
   });
 });
 
@@ -140,11 +195,16 @@ webhookRouter.post('/loyverse/receipts', (req, res) => {
 
 /**
  * Receive real-time inventory level update notifications from Loyverse.
- * Acknowledges immediately and triggers a background menu re-sync.
- * (Loyverse로부터 실시간 재고 수준 업데이트 알림 수신. 즉시 확인 후 백그라운드 메뉴 재동기화 트리거)
+ *
+ * Pipeline (파이프라인):
+ *   1. Immediately return 200 OK so Loyverse does not retry or time out
+ *      (즉시 200 OK 반환 — Loyverse 재시도 및 타임아웃 방지)
+ *   2. In the background, loop through req.body.inventory_levels and update
+ *      stock_quantity on the matching menu_items row by variant_id
+ *      (백그라운드에서 req.body.inventory_levels를 순회하며 variant_id로 menu_items의 stock_quantity 업데이트)
  */
 webhookRouter.post('/loyverse/inventory_levels', (req, res) => {
-  // Log the raw payload for debugging (디버깅을 위해 원시 페이로드 로깅)
+  // Log incoming payload keys for debugging (디버깅을 위해 수신 페이로드 키 로깅)
   console.log(
     '[WebhookRoute] Loyverse inventory level update received | payload keys: ' +
     `${Object.keys(req.body ?? {}).join(', ')} ` +
@@ -155,8 +215,49 @@ webhookRouter.post('/loyverse/inventory_levels', (req, res) => {
   // (즉시 확인 — Loyverse 재시도 방지를 위해 빠른 200 응답 필수)
   res.status(200).send('OK');
 
-  // Fire-and-forget background sync (파이어 앤 포겟 백그라운드 동기화)
-  runBackgroundSync('inventory_levels.update webhook').catch((err) => {
-    console.error(`[WebhookRoute] Unhandled error in runBackgroundSync | ${err.message} (runBackgroundSync 미처리 오류)`);
+  // Fire-and-forget — parse inventory_levels array and update stock_quantity per variant
+  // (파이어 앤 포겟 — inventory_levels 배열을 파싱하여 variant별 stock_quantity 업데이트)
+  const levels = req.body?.inventory_levels ?? [];
+
+  (async () => {
+    for (const level of levels) {
+      try {
+        // Update stock_quantity for the matching menu_items row by variant_id
+        // (variant_id로 일치하는 menu_items 행의 stock_quantity 업데이트)
+        const { error } = await supabase
+          .from('menu_items')
+          .update({ stock_quantity: level.in_stock })
+          .eq('variant_id', level.variant_id);
+
+        if (error) {
+          console.error(
+            `[WebhookRoute] Failed to update stock_quantity | variant_id: ${level.variant_id} | ${error.message} ` +
+            `(stock_quantity 업데이트 실패 | variant_id: ${level.variant_id} | 오류: ${error.message})`
+          );
+        } else {
+          console.log(
+            `[WebhookRoute] Stock updated | variant_id: ${level.variant_id} | in_stock: ${level.in_stock} ` +
+            `(재고 업데이트 성공 | variant_id: ${level.variant_id} | 재고: ${level.in_stock})`
+          );
+        }
+      } catch (err) {
+        // Unexpected per-level error — log and continue to next level
+        // (예기치 않은 재고 항목별 오류 — 로깅 후 다음 항목으로 계속)
+        console.error(
+          `[WebhookRoute] Unexpected error updating stock | variant_id: ${level.variant_id} | ${err.message} ` +
+          `(재고 업데이트 중 예기치 않은 오류 | variant_id: ${level.variant_id} | 오류: ${err.message})`
+        );
+      }
+    }
+
+    console.log(
+      `[WebhookRoute] Inventory webhook processing complete | count: ${levels.length} ` +
+      `(재고 웹훅 처리 완료 | 건수: ${levels.length})`
+    );
+  })().catch((err) => {
+    console.error(
+      `[WebhookRoute] Unhandled error in inventory_levels background handler | ${err.message} ` +
+      `(재고 수준 백그라운드 핸들러 미처리 오류 | ${err.message})`
+    );
   });
 });
