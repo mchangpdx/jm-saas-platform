@@ -140,15 +140,36 @@ export function setupWebSocket(httpServer) {
       return;
     }
 
-    // ── Initialise Gemini model with store master prompt ───────────────────
+    // ── Resolve store_id for this connection ───────────────────────────────
+    // Prefer the store_id query param so callers can explicitly identify the tenant.
+    // Fall back to storeData.id (the DB primary key) when the param is absent so
+    // legacy connections that only send agent_id still work correctly.
+    // (store_id 쿼리 파라미터를 우선 사용 — 호출자가 테넌트를 명시적으로 식별할 수 있음.
+    //  파라미터가 없으면 storeData.id(DB 기본 키)로 폴백 — agent_id만 전송하는 레거시 연결도 정상 동작)
+    const urlStoreId = searchParams.get('store_id');
+    const storeId    = urlStoreId ?? storeData.id;
+
+    if (!urlStoreId) {
+      // Warn so the absence is visible in logs — not a hard error because storeData.id is a safe fallback
+      // (부재가 로그에 표시되도록 경고 — storeData.id가 안전한 폴백이므로 하드 오류 아님)
+      console.warn(
+        `[WS] store_id not in URL — falling back to storeData.id: ${storeId} | agent: ${agentId} ` +
+        `(URL에 store_id 없음 — storeData.id로 폴백 | 에이전트: ${agentId})`
+      );
+    }
+
+    // ── Initialise Gemini model with store-specific master prompt ──────────
     // createGenerationModel() returns a raw GenerativeModel — NOT a ChatSession.
     // We call model.generateContentStream({ contents: history }) on every turn,
     // passing the full history array each time. This makes every call fully
     // independent and trivially abortable via AbortController.
+    // storeId is injected into the system instruction so Gemini knows exactly which
+    // tenant it is serving — prevents cross-tenant context bleed on shared endpoints.
     // (createGenerationModel()은 원시 GenerativeModel 반환 — ChatSession 아님.
     //  매 턴마다 model.generateContentStream({ contents: history }) 호출.
-    //  전체 history 배열을 매번 전달 — 각 호출이 완전히 독립적이고 AbortController로 중단 가능)
-    const masterPrompt = buildMasterPrompt(storeData);
+    //  storeId를 시스템 지시문에 주입 — Gemini가 서비스 중인 테넌트를 정확히 알 수 있음.
+    //  공유 엔드포인트에서 교차 테넌트 컨텍스트 유출 방지)
+    const masterPrompt = buildMasterPrompt(storeData, storeId);
     const model        = createGenerationModel(masterPrompt);
 
     // ── Per-connection session state ───────────────────────────────────────
@@ -184,9 +205,9 @@ export function setupWebSocket(httpServer) {
     };
 
     console.log(
-      `[WS] Session ready | agent: ${agentId} | store: ${storeData.store_name ?? '(unnamed)'} | ` +
-      `prompt: ${masterPrompt.length} chars ` +
-      `(세션 준비 완료 | 에이전트: ${agentId} | 프롬프트: ${masterPrompt.length}자)`
+      `[WS] Session ready | agent: ${agentId} | store_id: ${storeId} | ` +
+      `store: ${storeData.store_name ?? '(unnamed)'} | prompt: ${masterPrompt.length} chars ` +
+      `(세션 준비 완료 | 에이전트: ${agentId} | 매장 ID: ${storeId} | 프롬프트: ${masterPrompt.length}자)`
     );
 
     // ── Proactive Greeting (response_id: 0) ───────────────────────────────
@@ -961,9 +982,10 @@ async function fetchStoreData(agentId) {
  *     절대적으로 마지막에 위치하여 위의 모든 지시문을 재정의)
  *
  * @param {object} storeData — full store row from Supabase or mock (Supabase 또는 목에서 가져온 전체 스토어 행)
+ * @param {string} storeId  — resolved store UUID for this connection; injected into the system instruction (이 연결의 확인된 매장 UUID — 시스템 지시문에 주입)
  * @returns {string}
  */
-function buildMasterPrompt(storeData) {
+function buildMasterPrompt(storeData, storeId) {
   const timezone = storeData.timezone ?? 'America/Los_Angeles';
 
   // Generate the current date/time in the store's local timezone at session-start time.
@@ -987,6 +1009,17 @@ function buildMasterPrompt(storeData) {
     `SYSTEM INFO: Today's date and time is ${localDateTimeStr}. ` +
     `Use this absolute date to calculate any relative times (e.g., "tomorrow", "next Wednesday") ` +
     `requested by the user.`;
+
+  // Store identity block — injected per-connection so Gemini knows exactly which tenant it serves.
+  // Prevents cross-tenant context bleed on shared LLM endpoints and ensures any API calls
+  // that require a store_id (e.g., menu lookups, order creation) use the correct identifier.
+  // (연결별 주입 — Gemini가 서비스 중인 테넌트를 정확히 알도록 함.
+  //  공유 LLM 엔드포인트에서 교차 테넌트 컨텍스트 유출 방지.
+  //  store_id가 필요한 API 호출(메뉴 조회, 주문 생성 등)에 올바른 식별자 사용 보장)
+  const storeIdentityBlock =
+    `STORE IDENTITY: Your store_id is '${storeId}'. ` +
+    `This is the unique identifier for your store in our system. ` +
+    `Always use this store_id when making any API call or tool invocation that requires it.`;
 
   // Order rules block — item grouping and total_amount calculation before calling place_order.
   // (주문 규칙 블록 — place_order 호출 전 항목 그룹화 및 total_amount 계산 지시)
@@ -1034,8 +1067,10 @@ function buildMasterPrompt(storeData) {
       `Help customers browse the menu and place orders clearly and efficiently.`;
 
   // confirmationRulesBlock is always the final section — recency bias ensures highest priority.
-  // (confirmationRulesBlock은 항상 마지막 섹션 — 최근 편향으로 가장 높은 우선순위 보장)
-  return [dateContextBlock, personaBlock, orderRulesBlock, confirmationRulesBlock].join('\n\n');
+  // storeIdentityBlock follows dateContextBlock so store identity is established before persona.
+  // (confirmationRulesBlock은 항상 마지막 섹션 — 최근 편향으로 가장 높은 우선순위 보장.
+  //  storeIdentityBlock은 dateContextBlock 다음 — 페르소나 전에 매장 정체성 확립)
+  return [dateContextBlock, storeIdentityBlock, personaBlock, orderRulesBlock, confirmationRulesBlock].join('\n\n');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
