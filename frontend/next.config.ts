@@ -1,16 +1,21 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* 기존 config 옵션들이 있다면 유지하고 아래를 추가합니다 */
-  
   typescript: {
-    // !! 주의 !!
-    // 프로젝트에 타입스크립트 에러가 있더라도 프로덕션 빌드를 강제로 완료하도록 허용합니다.
     ignoreBuildErrors: true,
   },
   eslint: {
-    // 프로젝트에 ESLint 경고/에러가 있어도 빌드를 강제로 완료하도록 허용합니다.
     ignoreDuringBuilds: true,
+  },
+  // 👇 여기부터 새로 추가된 부분입니다! (자동 리다이렉트 기능)
+  async redirects() {
+    return [
+      {
+        source: '/',          // 사용자가 메인 주소(루트)로 접속하면
+        destination: '/login',// 무조건 /login 경로로 보냅니다
+        permanent: true,      // 영구적인 이동임을 검색엔진에 알립니다
+      },
+    ];
   },
 };
 
