@@ -21,7 +21,7 @@ const DEFAULT_GATEWAY = 'MAVERICK';
  * Returns an instantiated PaymentAdapter for the given gateway key.
  *
  * Usage:
- *   const adapter = getPaymentAdapter(req.storeContext.paymentType);
+ *   const adapter = getPaymentAdapter(req.storeContext.paymentGateway);
  *   const result  = await adapter.processPayment(amount, orderId, req.storeContext);
  *
  * (사용법: getPaymentAdapter로 어댑터 인스턴스를 받아 processPayment 호출)

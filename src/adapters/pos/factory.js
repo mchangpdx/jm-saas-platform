@@ -17,13 +17,13 @@ const POS_REGISTRY = {
 
 /**
  * Resolve and instantiate a POS adapter for a given store configuration.
- * Reads pos_system (DB/snake_case) with a posType (camelCase) fallback for compatibility.
+ * Reads pos_system (DB/snake_case) with a posSystem (camelCase) fallback for compatibility.
  * (스토어 구성에 따라 POS 어댑터 해석 및 생성.
- *  pos_system(DB/스네이크케이스) 우선, posType(카멜케이스) 폴백)
+ *  pos_system(DB/스네이크케이스) 우선, posSystem(카멜케이스) 폴백)
  *
  * @param {object} storeConfig                — tenant store context (테넌트 스토어 컨텍스트)
  * @param {string} storeConfig.pos_system     — POS system key, e.g. 'LOYVERSE' | 'QUANTIC' (POS 시스템 키)
- * @param {string} [storeConfig.posType]      — camelCase alias for pos_system (카멜케이스 별칭)
+ * @param {string} [storeConfig.posSystem]    — camelCase alias for pos_system (카멜케이스 별칭)
  * @param {string} storeConfig.pos_api_key    — API key/token for the POS system (POS 시스템 API 키)
  * @param {string} [storeConfig.posApiKey]    — camelCase alias for pos_api_key (카멜케이스 별칭)
  * @returns {PosAdapter}
@@ -32,7 +32,7 @@ const POS_REGISTRY = {
 export function getPosAdapter(storeConfig) {
   // Accept both snake_case (from DB) and camelCase (from storeContext) field names
   // (DB의 스네이크케이스와 storeContext의 카멜케이스를 모두 허용)
-  const posKey = (storeConfig.pos_system ?? storeConfig.posType)?.toUpperCase();
+  const posKey = (storeConfig.pos_system ?? storeConfig.posSystem)?.toUpperCase();
   const apiKey =  storeConfig.pos_api_key  ?? storeConfig.posApiKey;
 
   const factory = POS_REGISTRY[posKey];

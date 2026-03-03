@@ -40,9 +40,11 @@ export class StripeAdapter extends PaymentAdapter {
     params.append('line_items[0][price_data][product_data][description]', storeConfig.storeName ?? 'JM SaaS Store');
     params.append('line_items[0][quantity]',      '1');
 
-    // Redirect URLs — use env-configured base URL or fallback placeholder
-    // (리다이렉트 URL — 환경 변수 설정 기반 URL 또는 플레이스홀더 사용)
-    const baseUrl = process.env.APP_BASE_URL ?? 'https://your-domain.com';
+    // Redirect URLs — SERVER_URL is the authoritative public base URL shared across all adapters.
+    // Set to the Ngrok HTTPS URL in dev, production domain in prod. See .env.example.
+    // (리다이렉트 URL — SERVER_URL이 모든 어댑터에서 공유하는 권위 있는 공개 기본 URL.
+    //  개발 시 Ngrok HTTPS URL, 프로덕션에서는 프로덕션 도메인으로 설정 — .env.example 참조)
+    const baseUrl = process.env.SERVER_URL;
     params.append('success_url', `${baseUrl}/payment/success?order_id=${orderId}&session_id={CHECKOUT_SESSION_ID}`);
     params.append('cancel_url',  `${baseUrl}/payment/cancel?order_id=${orderId}`);
 

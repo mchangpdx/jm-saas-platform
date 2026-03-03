@@ -8,13 +8,13 @@ import { supabase } from '../config/supabase.js';
  *
  * req.storeContext shape:
  * {
- *   agentId:     string   — unique tenant identifier (테넌트 고유 ID)
- *   storeName:   string   — human-readable store name (매장명)
- *   posType:     string   — POS system key, e.g. 'LOYVERSE' | 'QUANTIC' (POS 시스템 키)
- *   posApiKey:   string   — API key/token for the POS system (POS 시스템 API 키/토큰)
- *   paymentType: string   — payment adapter key, e.g. 'stripe' | 'toss' (결제 어댑터 키)
- *   timezone:    string   — store timezone (매장 타임존)
- *   active:      boolean  — whether the agent subscription is active (구독 활성 여부)
+ *   agentId:        string   — unique tenant identifier (테넌트 고유 ID)
+ *   storeName:      string   — human-readable store name (매장명)
+ *   posSystem:      string   — POS system key, e.g. 'LOYVERSE' | 'QUANTIC' (POS 시스템 키)
+ *   posApiKey:      string   — API key/token for the POS system (POS 시스템 API 키/토큰)
+ *   paymentGateway: string   — payment adapter key, e.g. 'stripe' | 'toss' (결제 어댑터 키)
+ *   timezone:       string   — store timezone (매장 타임존)
+ *   active:         boolean  — whether the agent subscription is active (구독 활성 여부)
  * }
  */
 export async function tenantMiddleware(req, res, next) {
@@ -75,7 +75,7 @@ async function resolveStoreContext(agentId) {
   // ── PRODUCTION PATH ── query Supabase agents table (운영 경로 — Supabase agents 테이블 실조회)
   const { data, error } = await supabase
     .from('agents')
-    .select('id, store_name, pos_type, pos_api_key, payment_type, timezone, active')
+    .select('id, store_name, pos_system, pos_api_key, payment_gateway, timezone, active')
     .eq('id', agentId)
     .single();
 
@@ -87,13 +87,13 @@ async function resolveStoreContext(agentId) {
 
   // Normalize DB column names to camelCase storeContext shape (DB 컬럼명을 camelCase storeContext 형태로 정규화)
   return {
-    agentId:     data.id,
-    storeName:   data.store_name,
-    posType:     data.pos_type,
-    posApiKey:   data.pos_api_key,   // POS API key passed to the POS adapter factory (POS 어댑터 팩토리에 전달될 POS API 키)
-    paymentType: data.payment_type,
-    timezone:    data.timezone ?? 'America/Los_Angeles',
-    active:      data.active,
+    agentId:        data.id,
+    storeName:      data.store_name,
+    posSystem:      data.pos_system,       // Correct DB column name for POS type (POS 유형의 올바른 DB 컬럼명)
+    posApiKey:      data.pos_api_key,      // POS API key passed to the POS adapter factory (POS 어댑터 팩토리에 전달될 POS API 키)
+    paymentGateway: data.payment_gateway,  // Correct DB column name for payment adapter (결제 어댑터의 올바른 DB 컬럼명)
+    timezone:       data.timezone ?? 'America/Los_Angeles',
+    active:         data.active,
   };
 }
 
@@ -108,22 +108,22 @@ async function resolveStoreContext(agentId) {
 function getMockStoreContext(agentId) {
   const MOCK_STORES = {
     'agent-001': {
-      agentId:     'agent-001',
-      storeName:   'JM Korean BBQ — Downtown',
-      posType:     'LOYVERSE',
-      posApiKey:   'mock-loyverse-key-001',  // Mock key for local dev (로컬 개발용 목 키)
-      paymentType: 'stripe',
-      timezone:    'America/Los_Angeles',
-      active:      true,
+      agentId:        'agent-001',
+      storeName:      'JM Korean BBQ — Downtown',
+      posSystem:      'LOYVERSE',              // Correct field name — mirrors agents.pos_system (올바른 필드명 — agents.pos_system 반영)
+      posApiKey:      'mock-loyverse-key-001', // Mock key for local dev (로컬 개발용 목 키)
+      paymentGateway: 'stripe',               // Correct field name — mirrors agents.payment_gateway (올바른 필드명 — agents.payment_gateway 반영)
+      timezone:       'America/Los_Angeles',
+      active:         true,
     },
     'agent-002': {
-      agentId:     'agent-002',
-      storeName:   'JM Boba Tea — Koreatown',
-      posType:     'QUANTIC',
-      posApiKey:   'mock-quantic-key-002',   // Mock key for local dev (로컬 개발용 목 키)
-      paymentType: 'toss',
-      timezone:    'America/Los_Angeles',
-      active:      true,
+      agentId:        'agent-002',
+      storeName:      'JM Boba Tea — Koreatown',
+      posSystem:      'QUANTIC',               // Correct field name — mirrors agents.pos_system (올바른 필드명 — agents.pos_system 반영)
+      posApiKey:      'mock-quantic-key-002',  // Mock key for local dev (로컬 개발용 목 키)
+      paymentGateway: 'toss',                 // Correct field name — mirrors agents.payment_gateway (올바른 필드명 — agents.payment_gateway 반영)
+      timezone:       'America/Los_Angeles',
+      active:         true,
     },
   };
 

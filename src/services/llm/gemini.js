@@ -7,14 +7,16 @@
  *   conversationHistory → generateResponse() → LlmResult
  *     ├─ { type: 'TEXT',      text }           → send back to caller as next voice utterance
  *     └─ { type: 'TOOL_CALL', name, args }     → branch by name:
- *          ├─ 'get_menu'     → call POS adapter, inject result back into chat
- *          └─ 'create_order' → call extractOrderIntent() → enqueueOrder() in controller
+ *          ├─ 'check_menu'       → query menu_items DB, return item_id/name/price/stock_quantity
+ *          ├─ 'create_order'    → call extractOrderIntent() → enqueueOrder() in controller
+ *          └─ 'make_reservation'→ insert into reservations table, return reservation_id
  *
  * (흐름: conversationHistory → generateResponse() → LlmResult
  *   ├─ TEXT      → 음성 응답으로 반환
  *   └─ TOOL_CALL → name으로 분기:
- *        ├─ get_menu     → POS 어댑터 호출, 결과를 채팅에 주입
- *        └─ create_order → extractOrderIntent() → 컨트롤러에서 enqueueOrder())
+ *        ├─ check_menu        → menu_items DB 조회, item_id/name/price/stock_quantity 반환
+ *        ├─ create_order      → extractOrderIntent() → 컨트롤러에서 enqueueOrder()
+ *        └─ make_reservation  → reservations 테이블에 삽입, reservation_id 반환)
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -35,204 +37,204 @@ export const POS_TOOLS = [
   {
     functionDeclarations: [
 
-      // ── get_menu ────────────────────────────────────────────────────────────
-      // Utility: fetch the store menu from pre-loaded cache — no DB round-trip.
-      // (유틸리티: 미리 로드된 캐시에서 매장 메뉴 조회 — DB 왕복 없음)
+      // ── check_menu ──────────────────────────────────────────────────────────
+      // Fetch the full menu with live stock quantities — required before taking any order.
+      // store_id is resolved server-side from the session; no parameter needed here.
+      // (실시간 재고 수량이 포함된 전체 메뉴 조회 — 주문 접수 전 필수 호출.
+      //  store_id는 세션에서 서버 측 처리 — 파라미터 불필요)
       {
-        name: 'get_menu',
+        name: 'check_menu',
         description:
-          'Retrieves the current menu items and prices for this store. ' +
-          'Call this whenever the customer asks what is available to order or requests the menu. ' +
-          '(고객이 주문 가능 메뉴 또는 가격을 물을 때 호출)',
+          'Fetch the full menu, prices, and current stock_quantity for this store. ' +
+          'Always use this to check stock before taking an order. ' +
+          '(이 매장의 전체 메뉴, 가격, 현재 재고 수량 조회. 주문 접수 전 반드시 호출)',
         parameters: {
           type:       'object',
-          properties: {},  // No input required — menu is store-global (입력 파라미터 없음 — 메뉴는 매장 전체 공유)
+          properties: {},  // No parameters — store context is resolved server-side from the session (파라미터 없음 — 매장 컨텍스트는 세션에서 서버 측 처리)
           required:   [],
         },
       },
 
-      // ── search_menu ─────────────────────────────────────────────────────────
-      // Query the synced menu_items catalog by keyword, or return the full menu_cache.
-      // Prefer this over get_menu when the customer asks about a specific dish or price.
-      // (키워드로 동기화된 menu_items 카탈로그 조회, 또는 전체 menu_cache 반환.
-      //  고객이 특정 요리나 가격을 물을 때 get_menu보다 이 도구를 사용)
+      // ── create_order (ACTIVE) ────────────────────────────────────────────────
+      // Place a confirmed order using exact item_ids returned by check_menu.
+      // store_id and total_amount are resolved server-side — do NOT pass them as arguments.
+      // Requires all five customer fields before calling; server enriches items with names/prices.
+      // user_explicit_confirmation is the mechanical lock — Gemini must set it true only after
+      // the user has verbally confirmed the full order summary. The server rejects false/missing.
+      // (check_menu가 반환한 정확한 item_id를 사용하여 확정된 주문 접수.
+      //  store_id와 total_amount는 서버 측 처리 — 인수로 전달하지 말 것.
+      //  호출 전 다섯 가지 고객 필드 모두 필요. 서버가 items에 이름/가격 추가.
+      //  user_explicit_confirmation은 기계적 잠금 — Gemini는 사용자가 전체 주문 요약을
+      //  구두로 확인한 후에만 true로 설정. 서버는 false/누락 시 거부)
       {
-        name: 'search_menu',
+        name: 'create_order',
         description:
-          'Search for specific menu items by keyword. ' +
-          'Call this when the customer asks about a specific dish, ingredient, or price. ' +
-          'If no keyword is provided, returns the full menu. ' +
-          '(고객이 특정 요리, 재료, 가격을 물을 때 호출. 키워드 없으면 전체 메뉴 반환)',
-        parameters: {
-          type: 'object',
-          properties: {
-            keyword: {
-              type:        'string',
-              description: 'Search term to find matching menu items by name (이름으로 메뉴 항목을 찾는 검색어)',
-            },
-          },
-          required: [],  // keyword is optional — omit to get the full menu (키워드는 선택 사항 — 생략 시 전체 메뉴 반환)
-        },
-      },
-
-      // ── place_order (ACTIVE) ─────────────────────────────────────────────────
-      // Inserts a confirmed order row into the orders table.
-      // Call ONLY after the customer has explicitly confirmed every item and quantity.
-      // (확정된 주문을 orders 테이블에 삽입. 고객이 모든 항목과 수량을 명시적으로 확인한 후에만 호출)
-      {
-        name: 'place_order',
-        description:
-          'Places a new food or drink order for the customer. ' +
-          'Call this ONLY after the customer has confirmed every item and quantity out loud. ' +
-          '(고객이 모든 항목과 수량을 구두로 확인한 후에만 주문 접수)',
+          'Place a confirmed order. You MUST collect customer_name, customer_phone, customer_email, ' +
+          'and all item_ids BEFORE calling this. ' +
+          'You MUST also recite the full order summary to the customer and receive explicit verbal ' +
+          'confirmation ("Yes") before setting user_explicit_confirmation to true. ' +
+          '(확정된 주문 접수. 호출 전 고객 정보 및 item_id 수집 필수. ' +
+          '전체 주문 요약 낭독 및 명시적 구두 확인("예") 후에만 user_explicit_confirmation을 true로 설정)',
         parameters: {
           type: 'object',
           properties: {
 
-            customer_phone: {
-              type:        'string',
-              description: 'Customer phone number used to identify and follow up on the order (주문 확인 및 후속 조치에 사용되는 고객 전화번호)',
-            },
-
-            customer_email: {
-              type:        'string',
-              description: 'Customer email address for order confirmation receipt (주문 확인 영수증 전송을 위한 고객 이메일 주소)',
+            user_explicit_confirmation: {
+              type:        'boolean',
+              description:
+                'CRITICAL: You MUST set this to true, but ONLY AFTER you have recited the FULL ' +
+                'summary of the order to the user and they have explicitly said "Yes" or agreed. ' +
+                'If the user has not verbally confirmed the full summary yet, DO NOT CALL THIS TOOL. ' +
+                '(중요: 전체 주문 요약을 사용자에게 낭독하고 명시적으로 "예"라고 동의한 후에만 true로 설정. ' +
+                '아직 구두 확인이 없으면 이 도구를 호출하지 말 것)',
             },
 
             items: {
               type:        'array',
-              description: 'List of items the customer has confirmed they want to order — merge duplicates before calling (고객이 확인한 주문 항목 목록 — 호출 전 중복 항목 합산)',
+              description: 'List of items — each entry must use the exact item_id from check_menu (주문 항목 목록 — check_menu의 정확한 item_id 사용 필수)',
               items: {
                 type: 'object',
                 properties: {
-                  name: {
+                  item_id: {
                     type:        'string',
-                    description: 'Menu item name exactly as spoken by the customer (고객이 말한 메뉴 항목명)',
+                    description: 'Exact item_id from the check_menu response — do NOT invent or guess IDs (check_menu 응답의 정확한 item_id — ID를 만들거나 추측하지 말 것)',
                   },
                   quantity: {
-                    type:        'integer',
-                    description: 'Number of units — must be ≥ 1, duplicates merged (주문 수량 — 최소 1 이상, 중복 합산)',
+                    type:        'number',
+                    description: 'Number of units — must be ≥ 1 and within available stock_quantity (주문 수량 — 최소 1 이상이고 재고 수량 이내여야 함)',
                   },
                 },
-                required: ['name', 'quantity'],
+                required: ['item_id', 'quantity'],
               },
             },
 
-            total_amount: {
-              type:        'number',
-              description: 'The calculated total amount of the order based on menu prices — you MUST compute this before calling (메뉴 가격 기반 계산된 주문 총액 — 호출 전 반드시 계산 필요)',
+            customer_name: {
+              type:        'string',
+              description: 'Full name of the customer as provided during the call (통화 중 고객이 제공한 성명)',
             },
-
-          },
-          required: ['customer_phone', 'customer_email', 'items', 'total_amount'],
-        },
-      },
-
-      // ── make_reservation (ACTIVE) ────────────────────────────────────────────
-      // Inserts a confirmed reservation row into the reservations table.
-      // (확정된 예약을 reservations 테이블에 삽입)
-      {
-        name: 'make_reservation',
-        description:
-          'Makes a table reservation for the customer. ' +
-          'Collect date, time, party size, phone number, and email before calling this. ' +
-          '(테이블 예약 접수. 날짜, 시간, 인원, 전화번호, 이메일을 수집한 후 호출)',
-        parameters: {
-          type: 'object',
-          properties: {
 
             customer_phone: {
               type:        'string',
-              description: 'Customer phone number for reservation confirmation (예약 확인을 위한 고객 전화번호)',
+              description: 'Customer phone number for order confirmation and payment link delivery (주문 확인 및 결제 링크 전송용 고객 전화번호)',
             },
 
             customer_email: {
               type:        'string',
-              description: 'Customer email address for reservation confirmation receipt (예약 확인 영수증 전송을 위한 고객 이메일 주소)',
+              description: 'Customer email address for order confirmation receipt (주문 확인 영수증 전송용 고객 이메일 주소)',
             },
 
-            date: {
-              type:        'string',
-              description: 'Reservation date in YYYY-MM-DD format (예약 날짜 — YYYY-MM-DD 형식)',
+          },
+          required: ['user_explicit_confirmation', 'items', 'customer_name', 'customer_phone', 'customer_email'],
+        },
+      },
+
+      // ── make_reservation (ACTIVE) ────────────────────────────────────────────
+      // Place a table reservation for a customer.
+      // All six data fields are required before calling — the server saves customer_name to the DB.
+      // store_id is resolved server-side from the session; do NOT pass it as an argument.
+      // user_explicit_confirmation is the mechanical lock — Gemini must set it true only after
+      // the user has verbally confirmed the full reservation summary. Server rejects false/missing.
+      // (고객 테이블 예약 접수. 호출 전 6개 데이터 필드 모두 필요 — 서버가 customer_name을 DB에 저장.
+      //  store_id는 세션에서 서버 측 처리 — 인수로 전달하지 말 것.
+      //  user_explicit_confirmation은 기계적 잠금 — Gemini는 사용자가 전체 예약 요약을
+      //  구두로 확인한 후에만 true로 설정. 서버는 false/누락 시 거부)
+      {
+        name: 'make_reservation',
+        description:
+          'Place a confirmed table reservation. You MUST collect all 6 data fields BEFORE calling this. ' +
+          'You MUST also recite the full reservation summary to the customer and receive explicit verbal ' +
+          'confirmation ("Yes") before setting user_explicit_confirmation to true. ' +
+          '(확정된 테이블 예약 접수. 호출 전 6개 데이터 필드 수집 필수. ' +
+          '전체 예약 요약 낭독 및 명시적 구두 확인("예") 후에만 user_explicit_confirmation을 true로 설정)',
+        parameters: {
+          type: 'object',
+          properties: {
+
+            user_explicit_confirmation: {
+              type:        'boolean',
+              description:
+                'CRITICAL: You MUST set this to true, but ONLY AFTER you have recited the FULL ' +
+                'summary of the reservation to the user and they have explicitly said "Yes" or agreed. ' +
+                'If the user has not verbally confirmed the full summary yet, DO NOT CALL THIS TOOL. ' +
+                '(중요: 전체 예약 요약을 사용자에게 낭독하고 명시적으로 "예"라고 동의한 후에만 true로 설정. ' +
+                '아직 구두 확인이 없으면 이 도구를 호출하지 말 것)',
             },
 
-            time: {
+            customer_name: {
               type:        'string',
-              description: 'Reservation time in HH:MM 24-hour format (예약 시간 — HH:MM 24시간 형식)',
+              description: 'Full name of the customer making the reservation (예약자 성명)',
+            },
+
+            customer_phone: {
+              type:        'string',
+              description: 'Customer phone number for reservation confirmation (예약 확인용 고객 전화번호)',
+            },
+
+            customer_email: {
+              type:        'string',
+              description: 'Customer email address for reservation confirmation receipt (예약 확인 영수증 전송용 이메일)',
+            },
+
+            reservation_date: {
+              type:        'string',
+              description: 'Date of the reservation in YYYY-MM-DD format (예약 날짜 — YYYY-MM-DD 형식)',
+            },
+
+            reservation_time: {
+              type:        'string',
+              description: 'Time of the reservation in HH:MM 24-hour format (예약 시간 — HH:MM 24시간 형식)',
             },
 
             party_size: {
-              type:        'integer',
-              description: 'Number of guests — must be ≥ 1 (예약 인원 — 최소 1명 이상)',
+              type:        'number',
+              description: 'Number of guests in the party — must be ≥ 1 (파티 인원 수 — 최소 1 이상)',
             },
 
           },
-          required: ['customer_phone', 'customer_email', 'date', 'time', 'party_size'],
+          required: ['user_explicit_confirmation', 'customer_name', 'customer_phone', 'customer_email', 'reservation_date', 'reservation_time', 'party_size'],
         },
       },
 
-      // ── check_order_status (STUB) ────────────────────────────────────────────
-      // Feature under construction — returns a graceful holding message to Gemini.
-      // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환)
+      // ── save_customer_consent (ACTIVE) ────────────────────────────────────────
+      // Persist a customer's details to the CRM and POS only after the customer
+      // has explicitly said "Yes" to the consent question asked in the RETENTION LOOP.
+      // The server resolves store_id from the session — never pass it as an argument.
+      // Calling this tool without a preceding verbal "Yes" is a protocol violation.
+      // (고객이 보존 루프 동의 질문에 명시적으로 "예"라고 한 후에만 CRM 및 POS에 정보 저장.
+      //  store_id는 세션에서 서버 측 처리 — 인수로 전달하지 말 것.
+      //  구두 "예" 없이 이 도구를 호출하는 것은 프로토콜 위반)
       {
-        name: 'check_order_status',
+        name: 'save_customer_consent',
         description:
-          'Checks the status of an existing order by customer phone number. ' +
-          '(고객 전화번호로 기존 주문 상태 확인)',
+          'Save the customer\'s contact details to the CRM and POS after they have EXPLICITLY ' +
+          'agreed to save their information. ' +
+          'ONLY call this tool after the customer has verbally said "Yes" to the question: ' +
+          '"Would you like me to save your details for a faster experience next time?" ' +
+          'Do NOT call this tool if the customer declines, is silent, or changes the subject. ' +
+          'Do NOT call this automatically — always wait for the customer\'s explicit verbal "Yes". ' +
+          '(고객이 "다음에 더 빠른 서비스를 위해 정보를 저장해드릴까요?" 질문에 명시적으로 "예"라고 한 후에만 호출. ' +
+          '거절, 침묵, 주제 변경 시 절대 호출하지 말 것. 자동 호출 금지 — 항상 명시적 구두 동의 대기)',
         parameters: {
           type: 'object',
           properties: {
+
+            customer_name: {
+              type:        'string',
+              description: 'Full name of the customer to save — use the value already collected during the order or reservation (저장할 고객 성명 — 주문 또는 예약 중 수집된 값 사용)',
+            },
+
             customer_phone: {
               type:        'string',
-              description: 'Phone number used when the order was placed (주문 시 사용한 전화번호)',
+              description: 'Customer phone number to save — use the value already collected (저장할 고객 전화번호 — 이미 수집된 값 사용)',
             },
-          },
-          required: ['customer_phone'],
-        },
-      },
 
-      // ── cancel_or_modify (STUB) ──────────────────────────────────────────────
-      // Feature under construction — returns a graceful holding message to Gemini.
-      // (개발 중 기능 — Gemini에 정중한 안내 메시지 반환)
-      {
-        name: 'cancel_or_modify',
-        description:
-          'Cancels or modifies an existing order or reservation. ' +
-          '(기존 주문 또는 예약 취소 또는 변경)',
-        parameters: {
-          type: 'object',
-          properties: {
-            customer_phone: {
+            customer_email: {
               type:        'string',
-              description: 'Phone number associated with the order or reservation (주문 또는 예약에 연결된 전화번호)',
+              description: 'Customer email address to save — use the value already collected (저장할 고객 이메일 주소 — 이미 수집된 값 사용)',
             },
-            request_details: {
-              type:        'string',
-              description: 'Description of what the customer wants to cancel or change (취소 또는 변경 내용 설명)',
-            },
-          },
-          required: ['customer_phone', 'request_details'],
-        },
-      },
 
-      // ── transfer_to_human (STUB) ─────────────────────────────────────────────
-      // Signals that the call should be escalated to a human staff member.
-      // (사람 직원에게 통화를 에스컬레이션해야 함을 신호)
-      {
-        name: 'transfer_to_human',
-        description:
-          'Escalates the call to a human staff member when the request is outside the AI\'s capabilities. ' +
-          'Use this for complaints, complex special requests, or when the customer explicitly asks for a person. ' +
-          '(AI 처리 범위를 벗어난 요청 시 사람 직원에게 에스컬레이션. 불만, 복잡한 요청, 또는 고객이 직접 사람을 요청할 때 사용)',
-        parameters: {
-          type: 'object',
-          properties: {
-            reason: {
-              type:        'string',
-              description: 'Brief description of why the call is being escalated (에스컬레이션 이유에 대한 간략한 설명)',
-            },
           },
-          required: ['reason'],
+          required: ['customer_name', 'customer_phone', 'customer_email'],
         },
       },
 
@@ -422,12 +424,13 @@ function buildSystemInstruction(storeConfig) {
   return (
     `You are a friendly and efficient voice ordering assistant for ${storeConfig.storeName}. ` +
     `Help customers browse the menu and place orders clearly. ` +
-    `Always call get_menu before listing available items. ` +
-    `Call create_order only after the customer has confirmed every item name, quantity, and the total price. ` +
+    `Always call check_menu before listing available items or taking any order. ` +
+    `Verify stock_quantity before accepting each item — refuse gracefully if stock is insufficient. ` +
+    `Call create_order only after the customer has confirmed every item and the total price. ` +
     `Keep all responses concise and natural — this is a voice interface, not a chat UI. ` +
     `(${storeConfig.storeName}의 친절하고 효율적인 음성 주문 도우미. ` +
-    `항목 나열 전 반드시 get_menu 호출. 고객이 항목명·수량·총 금액을 확인한 후에만 create_order 호출. ` +
-    `음성 인터페이스이므로 짧고 자연스러운 응답 유지)`
+    `항목 나열 또는 주문 접수 전 반드시 check_menu 호출. 재고 확인 후 부족 시 정중히 거절. ` +
+    `고객이 항목·총 금액을 확인한 후에만 create_order 호출. 음성 인터페이스이므로 짧고 자연스러운 응답 유지)`
   );
 }
 
@@ -442,7 +445,7 @@ function buildSystemInstruction(storeConfig) {
  * @typedef  {object}  LlmResult
  * @property {'TEXT' | 'TOOL_CALL'} type
  * @property {string}  [text]   — voice reply text when type === 'TEXT' (텍스트 응답)
- * @property {string}  [name]   — tool name when type === 'TOOL_CALL': 'get_menu' | 'create_order' (도구명)
+ * @property {string}  [name]   — tool name when type === 'TOOL_CALL': 'check_menu' | 'create_order' | 'make_reservation' (도구명)
  * @property {object}  [args]   — Gemini-extracted tool arguments when type === 'TOOL_CALL' (도구 인수)
  */
 

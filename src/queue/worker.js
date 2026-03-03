@@ -78,8 +78,8 @@ async function processOrderJob(job) {
 
 /**
  * Stage 2 — Resolve the tenant's POS adapter and submit the order.
- * The factory selects the correct adapter (Loyverse, Quantic, …) from storeContext.posType.
- * (스테이지 2 — 테넌트 POS 어댑터 해석 후 주문 전송. 팩토리가 storeContext.posType으로 올바른 어댑터 선택)
+ * The factory selects the correct adapter (Loyverse, Quantic, …) from storeContext.posSystem.
+ * (스테이지 2 — 테넌트 POS 어댑터 해석 후 주문 전송. 팩토리가 storeContext.posSystem으로 올바른 어댑터 선택)
  *
  * @param {object} orderData
  * @param {object} storeContext
@@ -88,8 +88,8 @@ async function processOrderJob(job) {
  */
 async function processPosStage(orderData, storeContext, job) {
   console.log(
-    `[Worker] [${job.id}] Stage 2 — resolving POS adapter for type: ${storeContext.posType} ` +
-    `(스테이지 2 — POS 어댑터 해석: ${storeContext.posType})`
+    `[Worker] [${job.id}] Stage 2 — resolving POS adapter for type: ${storeContext.posSystem} ` +
+    `(스테이지 2 — POS 어댑터 해석: ${storeContext.posSystem})`
   );
 
   // Resolve the correct POS adapter from the factory using the tenant's store context
@@ -117,16 +117,16 @@ async function processPosStage(orderData, storeContext, job) {
  * @returns {Promise<import('../adapters/payment/interface.js').PaymentResult>}
  */
 async function processPaymentStage(orderData, storeContext, job) {
-  const { paymentType } = storeContext;
+  const { paymentGateway } = storeContext;  // Correct field name — was paymentType (올바른 필드명 — paymentType에서 변경)
 
   console.log(
-    `[Worker] [${job.id}] Stage 3 — charging via ${paymentType} adapter ` +
-    `(스테이지 3 — ${paymentType} 어댑터로 결제 처리)`
+    `[Worker] [${job.id}] Stage 3 — charging via ${paymentGateway} adapter ` +
+    `(스테이지 3 — ${paymentGateway} 어댑터로 결제 처리)`
   );
 
-  // Resolve adapter via factory — defaults to MAVERICK if paymentType is missing
-  // (팩토리에서 어댑터 해석 — paymentType 없으면 MAVERICK 기본값)
-  const paymentAdapter = getPaymentAdapter(paymentType);
+  // Resolve adapter via factory — defaults to MAVERICK if paymentGateway is missing
+  // (팩토리에서 어댑터 해석 — paymentGateway 없으면 MAVERICK 기본값)
+  const paymentAdapter = getPaymentAdapter(paymentGateway);
 
   const paymentResult = await paymentAdapter.processPayment(
     orderData.totalAmountCents,

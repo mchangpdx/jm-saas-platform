@@ -575,6 +575,21 @@ export async function syncInventoryFromLoyverse(storeId, storeApiKey) {
 }
 
 /**
+ * Alias for injectOrder — satisfies callers that use the injectReceiptToLoyverse name.
+ * Delegates entirely to injectOrder which handles catalog lookup, payment type resolution,
+ * and the POST /receipts call to Loyverse.
+ * (injectOrder의 별칭 — injectReceiptToLoyverse 이름을 사용하는 호출자 지원.
+ *  카탈로그 조회, 결제 유형 확인, Loyverse POST /receipts 호출을 모두 injectOrder에 위임)
+ *
+ * @param {object} order   — full order row from Supabase (Supabase의 전체 주문 행)
+ * @param {string} apiKey  — Loyverse Bearer token from stores.pos_api_key (Bearer 토큰)
+ * @returns {Promise<object|null>} Loyverse receipt response or null on failure (영수증 응답 또는 실패 시 null)
+ */
+export async function injectReceiptToLoyverse(order, apiKey) {
+  return injectOrder(order, apiKey);
+}
+
+/**
  * Inject a reservation into the POS system.
  * STUB: Loyverse does not support reservation records — skip silently.
  * (예약을 POS 시스템에 주입.

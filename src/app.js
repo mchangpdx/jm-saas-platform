@@ -1,6 +1,7 @@
 // Entry point — bootstrap Express app and mount all middleware/routes (진입점 — Express 앱 초기화 및 미들웨어/라우트 마운트)
 import './config/env.js'; // Validate env vars before anything else (다른 모듈보다 먼저 환경 변수 검증)
 import express from 'express';
+import cors    from 'cors';
 import axios             from 'axios';
 import { env }            from './config/env.js';
 import { v1Router }       from './routes/v1/index.js';
@@ -9,20 +10,35 @@ import { posRouter }      from './routes/posRoutes.js';
 import { webhookRouter }  from './routes/webhookRoutes.js';
 import { authRouter }     from './routes/authRoutes.js';
 import { aiRouter }       from './routes/aiRoutes.js';
-import { setupWebSocket }             from './websocket/llmServer.js';
-import { supabase }                    from './config/supabase.js';
-import { syncInventoryFromLoyverse }   from './services/pos/posService.js';
+import { syncRouter }     from './routes/syncRoutes.js';
+import { setupWebSocket } from './websocket/llmServer.js';
 import './jobs/cronJobs.js'; // Activate the daily menu sync scheduler on boot (부팅 시 일별 메뉴 동기화 스케줄러 활성화)
 
 const app = express();
 
 // ── Global Middleware ──────────────────────────────────────────────────────────
 
-// Parse incoming JSON bodies (JSON 바디 파싱)
+// Allow cross-origin requests from the Next.js dev server (Next.js 개발 서버의 크로스 오리진 요청 허용)
+app.use(cors({
+  origin:      'http://localhost:3001', // Next.js frontend origin (Next.js 프론트엔드 출처)
+  credentials: true,                    // Allow cookies and auth headers (쿠키 및 인증 헤더 허용)
+}));
+
+// Parse incoming JSON bodies — must run BEFORE the body logger so req.body is populated
+// (JSON 바디 파싱 — req.body가 채워지도록 바디 로거보다 먼저 실행되어야 함)
 app.use(express.json());
 
 // Parse URL-encoded form data (URL 인코딩 폼 데이터 파싱)
 app.use(express.urlencoded({ extended: false }));
+
+// X-Ray logger — runs AFTER body parsers so req.body is fully available for every method.
+// Logs method, URL, and the parsed body to confirm what the server actually receives.
+// (X-Ray 로거 — 바디 파서 이후 실행하여 모든 메서드에서 req.body 완전히 사용 가능.
+//  서버가 실제로 수신한 내용 확인을 위해 메서드, URL, 파싱된 바디 기록)
+app.use((req, _res, next) => {
+  console.log(`[Server Trace] ${req.method} ${req.url} | Body:`, req.body); // Full request trace for CORS + storeId debugging (CORS + storeId 디버깅을 위한 전체 요청 추적)
+  next();
+});
 
 // Attach request timestamp for latency tracking (요청 타임스탬프 주입 — 지연 시간 추적용)
 app.use((_req, _res, next) => {
@@ -53,6 +69,10 @@ app.use('/api/auth', authRouter);
 // Mount AI router — simplified endpoints designed for LLM tool/function calling
 // (AI 라우터 마운트 — LLM 도구/함수 호출을 위해 설계된 간소화된 엔드포인트)
 app.use('/api/ai', aiRouter);
+
+// Mount sync router — Expert Mode (Method B) POS → staging → AI menu pipeline
+// (동기화 라우터 마운트 — 전문가 모드(방법 B) POS → 스테이징 → AI 메뉴 파이프라인)
+app.use('/api/sync', syncRouter);
 
 // ── Root Route — OAuth callback or health check ───────────────────────────────
 //
@@ -175,55 +195,6 @@ app.get('/', async (req, res) => {
       `<h1>OAuth Setup Failed</h1><p>${JSON.stringify(detail)}</p>`
     );
   }
-});
-
-// ── GET /api/sync/inventory — Manual full inventory sync trigger ──────────────
-//
-// Temporary endpoint for testing and for the initial "bootstrap" sync that must
-// run before webhook-based incremental updates can be trusted.
-// Fetches all stores with a pos_api_key and runs syncInventoryFromLoyverse for each.
-// Remove or gate behind auth before going to production.
-//
-// (테스트 및 웹훅 기반 증분 업데이트 신뢰 전 필수 초기 부트스트랩 동기화용 임시 엔드포인트.
-//  pos_api_key가 있는 모든 매장 조회 후 syncInventoryFromLoyverse 실행.
-//  프로덕션 전 제거 또는 인증 게이트 추가 필요)
-
-app.get('/api/sync/inventory', async (_req, res) => {
-  console.log(
-    '[SyncRoute] Manual inventory sync triggered (수동 재고 동기화 트리거)'
-  );
-
-  // Fetch all stores that have a Loyverse API key configured (Loyverse API 키가 설정된 모든 매장 조회)
-  const { data: stores, error: fetchError } = await supabase
-    .from('stores')
-    .select('id, name, pos_api_key')
-    .not('pos_api_key', 'is', null);
-
-  if (fetchError || !stores?.length) {
-    console.error(
-      `[SyncRoute] Failed to fetch stores for inventory sync | ` +
-      `${fetchError?.message ?? 'no stores found'} ` +
-      `(재고 동기화를 위한 매장 조회 실패 | 오류: ${fetchError?.message ?? '매장 없음'})`
-    );
-    return res.status(500).json({
-      success: false,
-      error: fetchError?.message ?? 'No stores with pos_api_key found',
-    });
-  }
-
-  // Process each store sequentially and collect per-store results (매장별 순차 처리 후 결과 수집)
-  const results = [];
-  for (const store of stores) {
-    const result = await syncInventoryFromLoyverse(store.id, store.pos_api_key);
-    results.push({ store: store.name, storeId: store.id, ...result });
-  }
-
-  console.log(
-    `[SyncRoute] Manual inventory sync complete | stores: ${results.length} ` +
-    `(수동 재고 동기화 완료 | 매장 수: ${results.length})`
-  );
-
-  return res.json({ success: true, results });
 });
 
 // ── 404 Handler ───────────────────────────────────────────────────────────────

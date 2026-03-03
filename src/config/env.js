@@ -13,6 +13,19 @@ for (const key of REQUIRED) {
   }
 }
 
+// Non-fatal warning for important-but-optional keys — the server starts without them,
+// but features that depend on them will be degraded or disabled at runtime.
+// Logged here (at boot) so the developer sees the gap before any call arrives.
+// (선택적이지만 중요한 키의 비치명 경고 — 서버는 이 없이도 시작되지만
+//  의존 기능이 저하되거나 비활성화됨. 부팅 시 로깅하여 통화 전에 개발자가 확인 가능)
+if (!process.env.RETELL_API_KEY) {
+  console.error(
+    '!!! CRITICAL ERROR: RETELL_API_KEY IS MISSING IN BACKEND .ENV !!! ' +
+    'Phone lookup and CRM personalisation are DISABLED for ALL calls. ' +
+    '(치명 오류: .env에 RETELL_API_KEY 누락 — 모든 통화의 전화번호 조회 및 CRM 개인화 비활성화)'
+  );
+}
+
 export const env = {
   port: parseInt(process.env.PORT ?? '3000', 10),
   nodeEnv: process.env.NODE_ENV ?? 'development',

@@ -191,11 +191,11 @@ aiRouter.post('/order', async (req, res) => {
   }
 
   // ── Step 4: Build mock payment URL and return to the AI ────────────────────
-  // In production replace with a real payment gateway checkout URL.
-  // LOYVERSE_REDIRECT_URI is the public base URL (ngrok or production domain).
-  // (프로덕션에서는 실제 결제 게이트웨이 체크아웃 URL로 교체.
-  //  LOYVERSE_REDIRECT_URI는 공개 기본 URL — ngrok 또는 프로덕션 도메인)
-  const baseUrl    = process.env.LOYVERSE_REDIRECT_URI ?? 'http://localhost:3000';
+  // SERVER_URL is the authoritative public base URL — set to the Ngrok HTTPS URL in dev,
+  // production domain in prod. In production replace the path with a real PG checkout URL.
+  // (SERVER_URL이 권위 있는 공개 기본 URL — 개발 시 Ngrok HTTPS, 프로덕션 도메인 사용.
+  //  프로덕션에서는 경로를 실제 결제 게이트웨이 체크아웃 URL로 교체)
+  const baseUrl    = process.env.SERVER_URL;
   const paymentUrl = `${baseUrl}/api/payment/mock/${newOrder.id}`;
 
   console.log(
