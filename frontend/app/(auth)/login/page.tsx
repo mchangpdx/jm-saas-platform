@@ -53,6 +53,7 @@ export default function LoginPage() {
     let role: 'agency' | 'store' = 'agency';
 
     if (userId) {
+      // @ts-ignore
       const { data: profile } = await supabase
         .from('profiles')
         .select('role')
