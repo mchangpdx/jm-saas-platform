@@ -19,9 +19,24 @@ const app = express();
 // ── Global Middleware ──────────────────────────────────────────────────────────
 
 // Allow cross-origin requests from the Next.js dev server (Next.js 개발 서버의 크로스 오리진 요청 허용)
+// --- CORS VIP 명단 설정 ---
+const allowedOrigins = [
+  'http://localhost:3000', // 로컬 테스트용 (3000 포트)
+  'http://localhost:3001', // 로컬 테스트용 (3001 포트)
+  'https://jm-saas-platform-demo.netlify.app', // Netlify 임시 도메인
+  'https://aidemo.jmtechone.com' // 사장님 정식 도메인 (✨가장 중요)
+];
+
 app.use(cors({
-  origin:      'http://localhost:3001', // Next.js frontend origin (Next.js 프론트엔드 출처)
-  credentials: true,                    // Allow cookies and auth headers (쿠키 및 인증 헤더 허용)
+  origin: function (origin, callback) {
+    // origin이 없거나(서버 간 통신), VIP 명단에 있으면 통과
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS 정책에 의해 차단되었습니다.'));
+    }
+  },
+  credentials: true, // 쿠키 및 인증 헤더 허용
 }));
 
 // Parse incoming JSON bodies — must run BEFORE the body logger so req.body is populated
