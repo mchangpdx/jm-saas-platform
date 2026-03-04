@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { 
   Search, Filter, Calendar, Clock, Camera, 
-  RefreshCcw, AlertCircle, CheckCircle2, XCircle, Monitor
+  RefreshCcw, AlertCircle, CheckCircle2, XCircle, Monitor, 
+  ChevronLeft, Star, Printer, MoreVertical, FileText
 } from 'lucide-react';
 
 // ── Type Definitions (타입 정의) ──────────────────────────────────────────────
@@ -11,7 +12,8 @@ import {
 interface ReceiptItem {
   name: string;
   qty: number;
-  price: number;
+  unitPrice: number;
+  totalPrice: number;
 }
 
 interface SolinkEvent {
@@ -31,39 +33,38 @@ export default function SolinkProDashboard() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedEvent, setSelectedEvent] = useState<SolinkEvent | null>(null);
 
-  // Filter States (필터 상태)
+  // Mobile Drill-down State (모바일 화면 전환 상태)
+  const [isMobileDetailOpen, setIsMobileDetailOpen] = useState<boolean>(false);
+
+  // Advanced Filter States (고급 필터 상태)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('All');
-  const [filterDate, setFilterDate] = useState('');
   const [filterTime, setFilterTime] = useState('All Day');
+  
+  // Date Range States (기간 검색 상태)
+  const [datePreset, setDatePreset] = useState('Today'); // 'Today', 'Week', 'Month', 'Year', 'Custom', 'All'
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
 
-  // ── Data Fetching & Solink Precision Mapping (데이터 로드 및 솔링크 정밀 매핑) ──
+  // ── Data Fetching & Bulletproof Mapping (데이터 로드 및 방탄 매핑) ────────
 
   const loadData = async () => {
     setLoading(true);
     try {
-      // Fetch 30 days of real data from the backend
-      // (백엔드에서 30일치 실제 데이터를 가져옵니다)
+      // Fetch 30 days of real data for comprehensive filtering
+      // (포괄적인 필터링을 위해 30일치 실제 데이터를 가져옵니다)
       const response = await fetch("https://jm-saas-platform.onrender.com/api/solink/events?days=30");
       const result = await response.json();
       
       if (result.success && Array.isArray(result.data)) {
-        
-        // Map the exact JSON structure provided by the Solink API
-        // (Solink API가 제공하는 정확한 JSON 구조를 매핑합니다)
         const normalizedData = result.data.map((item: any) => {
-          
-          // Access the nested 'details' object where Solink hides the real POS data
-          // (Solink가 실제 POS 데이터를 숨겨둔 중첩된 'details' 객체에 접근합니다)
           const details = item.details || {};
-
-          // Extract the exact fields based on the F12 Network payload
-          // (F12 네트워크 페이로드를 기반으로 정확한 필드를 추출합니다)
+          
+          // Guaranteed amount extraction (보장된 금액 추출)
           const rawAmount = details["Total amount"] ?? details["Total price"] ?? item.amount ?? 0;
           const parsedAmount = parseFloat(rawAmount) || 0;
 
-          // Determine transaction type safely (Void, Refund, or Sale)
-          // (거래 유형을 안전하게 판별합니다 - 취소, 환불 또는 판매)
+          // Transaction type normalization (거래 유형 정규화)
           let eventType = "Sale";
           const statusStr = (details["Status"] || item.subtype || item.type || "").toUpperCase();
           if (statusStr.includes("VOID")) eventType = "Void";
@@ -74,32 +75,36 @@ export default function SolinkProDashboard() {
             startTime: item.startTime || new Date().toISOString(),
             type: eventType,
             amount: parsedAmount,
-            // Solink uses "Register ID" with a space
-            // (Solink는 공백이 포함된 "Register ID"를 사용합니다)
-            register: details["Register ID"] || details["Store Number"] || "POS-01",
-            cashier: "System", // Or extract from receipt text if available (또는 가능할 경우 영수증 텍스트에서 추출)
+            register: details["Register ID"] || details["Store Number"] || "JM-POS-01",
+            cashier: item.cashier || details["Employee ID"] || "08afabe6-09fb...",
             
-            // Map the items array inside details
-            // (details 안의 items 배열을 매핑합니다)
-            items: Array.isArray(details.items) ? details.items.map((i: any) => ({
-              // Solink uses "description", "quantity", and "unitPrice"
-              // (Solink는 "description", "quantity", "unitPrice" 필드를 사용합니다)
-              name: i.description || i.name || 'Unknown Item',
-              qty: parseInt(i.quantity || i.qty || 1, 10),
-              price: parseFloat(i.unitPrice || i.price || 0)
-            })) : []
+            // Map items with safety checks (안전 검사를 포함한 품목 매핑)
+            items: Array.isArray(details.items) ? details.items.map((i: any) => {
+              const q = parseInt(i.quantity || i.qty || 1, 10);
+              const p = parseFloat(i.unitPrice || i.price || 0);
+              return {
+                name: i.description || i.name || 'Unknown Item',
+                qty: q,
+                unitPrice: p,
+                totalPrice: parseFloat(i.extendedPrice) || (q * p)
+              };
+            }) : []
           };
         });
 
-        // Filter out any completely empty events just in case
-        // (혹시 모를 완전히 비어있는 이벤트를 필터링하여 제외합니다)
+        // Filter out completely empty records (완전히 비어있는 기록 제외)
         const validEvents = normalizedData.filter(e => e.amount > 0 || e.items.length > 0);
 
+        // Sort descending by time (최신순 정렬)
+        validEvents.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+
         setEvents(validEvents);
-        if (validEvents.length > 0) setSelectedEvent(validEvents[0]);
+        if (validEvents.length > 0 && !isMobileDetailOpen) {
+          setSelectedEvent(validEvents[0]);
+        }
       }
     } catch (error) {
-      console.error("Failed to load Solink data (솔링크 데이터 로드 실패):", error);
+      console.error("Fetch Error (가져오기 오류):", error);
     } finally {
       setLoading(false);
     }
@@ -107,20 +112,14 @@ export default function SolinkProDashboard() {
 
   useEffect(() => { loadData(); }, []);
 
-  // ── Advanced Filtering Logic (고급 필터링 로직) ───────────────────────────
+  // ── High-Integrity Filtering Logic (무결성 필터링 로직) ───────────────────
 
   const filteredEvents = useMemo(() => {
     return events.filter(event => {
       // 1. Type Filter (유형 필터)
       if (filterType !== 'All' && event.type !== filterType) return false;
 
-      // 2. Date Filter (날짜 필터 - YYYY-MM-DD)
-      if (filterDate) {
-        const eventDate = new Date(event.startTime).toISOString().split('T')[0];
-        if (eventDate !== filterDate) return false;
-      }
-
-      // 3. Time Range Filter (시간대 필터)
+      // 2. Time of Day Filter (시간대 필터)
       if (filterTime !== 'All Day') {
         const hour = new Date(event.startTime).getHours();
         if (filterTime === 'Morning' && (hour < 6 || hour >= 12)) return false;
@@ -128,205 +127,300 @@ export default function SolinkProDashboard() {
         if (filterTime === 'Evening' && (hour < 18 && hour >= 6)) return false;
       }
 
-      // 4. Text Search (텍스트 검색)
+      // 3. Text Search (텍스트 검색)
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
-        const matchReg = event.register.toLowerCase().includes(query);
-        const matchId = event.eventId.toLowerCase().includes(query);
-        if (!matchReg && !matchId) return false;
+        if (!event.register.toLowerCase().includes(query) && !event.eventId.toLowerCase().includes(query)) return false;
+      }
+
+      // 4. Advanced Date Range Filter (고급 기간 필터)
+      const eventDate = new Date(event.startTime);
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+      if (datePreset === 'Today') {
+        if (eventDate < todayStart) return false;
+      } else if (datePreset === 'Week') {
+        const weekAgo = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+        if (eventDate < weekAgo) return false;
+      } else if (datePreset === 'Month') {
+        const monthAgo = new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000);
+        if (eventDate < monthAgo) return false;
+      } else if (datePreset === 'Year') {
+        const yearAgo = new Date(todayStart.getTime() - 365 * 24 * 60 * 60 * 1000);
+        if (eventDate < yearAgo) return false;
+      } else if (datePreset === 'Custom') {
+        if (customDateFrom && eventDate < new Date(customDateFrom)) return false;
+        if (customDateTo) {
+          const toDate = new Date(customDateTo);
+          toDate.setHours(23, 59, 59, 999);
+          if (eventDate > toDate) return false;
+        }
       }
 
       return true;
     });
-  }, [events, filterType, filterDate, filterTime, searchQuery]);
+  }, [events, filterType, filterTime, searchQuery, datePreset, customDateFrom, customDateTo]);
 
-  // ── UI Render (UI 렌더링) ──────────────────────────────────────────────────
+  // ── Event Handlers (이벤트 핸들러) ─────────────────────────────────────────
+
+  const handleEventClick = (event: SolinkEvent) => {
+    setSelectedEvent(event);
+    setIsMobileDetailOpen(true); // Open detail view on mobile (모바일에서 상세 뷰 열기)
+  };
+
+  const handleBackToList = () => {
+    setIsMobileDetailOpen(false); // Go back to list on mobile (모바일에서 리스트로 돌아가기)
+  };
+
+  // ── UI Components (UI 컴포넌트) ─────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-200">
+    <div className="flex flex-col h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
       
-      {/* ── Top Bar: Search & Filters (상단 바: 검색 및 필터) ── */}
-      <div className="bg-slate-900 border-b border-slate-800 p-4 grid grid-cols-1 md:flex gap-4 items-center">
-        
-        {/* Date Filter (날짜 필터) */}
-        <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded border border-slate-700">
-          <Calendar size={16} className="text-emerald-500" />
-          <input 
-            type="date" 
-            className="bg-transparent outline-none text-sm text-white"
-            value={filterDate}
-            onChange={(e) => setFilterDate(e.target.value)}
-          />
-        </div>
-
-        {/* Type Filter (유형 필터) */}
-        <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded border border-slate-700">
-          <Filter size={16} className="text-emerald-500" />
-          <select 
-            className="bg-transparent outline-none text-sm"
-            value={filterType}
-            onChange={(e) => setFilterType(e.target.value)}
-          >
-            <option value="All">All Types</option>
-            <option value="Sale">Sales</option>
-            <option value="Void">Voids</option>
-            <option value="Refund">Refunds</option>
-          </select>
-        </div>
-
-        {/* Time Filter (시간 필터) */}
-        <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded border border-slate-700">
-          <Clock size={16} className="text-emerald-500" />
-          <select 
-            className="bg-transparent outline-none text-sm"
-            value={filterTime}
-            onChange={(e) => setFilterTime(e.target.value)}
-          >
-            <option value="All Day">All Day</option>
-            <option value="Morning">Morning (06-12)</option>
-            <option value="Afternoon">Afternoon (12-18)</option>
-            <option value="Evening">Evening (18-06)</option>
-          </select>
-        </div>
-
-        {/* Text Search (텍스트 검색) */}
-        <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-slate-800 rounded border border-slate-700">
-          <Search size={16} className="text-slate-500" />
-          <input 
-            placeholder="Search POS ID or Event ID..."
-            className="bg-transparent outline-none text-sm w-full"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-
-        {/* Refresh Button (새로고침 버튼) */}
-        <button onClick={loadData} className="p-2 hover:bg-slate-700 rounded transition-colors">
-          <RefreshCcw size={18} className={loading ? "animate-spin text-emerald-500" : "text-slate-400"} />
-        </button>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        
-        {/* ── Left Panel: Result List (왼쪽 패널: 결과 리스트) ── */}
-        <div className="w-[380px] border-r border-slate-800 overflow-y-auto p-4 space-y-3 bg-slate-900/50">
-          <div className="flex justify-between items-center mb-4">
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
-              {filteredEvents.length} Events Matching
-            </span>
-            {filterDate && (
-              <button onClick={() => setFilterDate('')} className="text-[10px] text-emerald-500 hover:underline">
-                Clear Date
-              </button>
-            )}
-          </div>
-
-          {loading ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-600 gap-3">
-              <RefreshCcw className="animate-spin" />
-              <p className="text-sm">Fetching cloud data... (클라우드 데이터 로딩 중...)</p>
-            </div>
-          ) : filteredEvents.length === 0 ? (
-            <div className="text-center py-20 text-slate-600">No events match your filters. (검색 결과가 없습니다.)</div>
-          ) : (
-            filteredEvents.map((event) => (
-              <div 
-                key={event.eventId}
-                onClick={() => setSelectedEvent(event)}
-                className={`p-4 rounded-xl border transition-all cursor-pointer group ${
-                  selectedEvent?.eventId === event.eventId 
-                    ? "border-emerald-500 bg-emerald-500/10 shadow-[0_0_20px_rgba(16,185,129,0.1)]" 
-                    : "border-slate-800 bg-slate-900/80 hover:border-slate-600"
+      {/* ── Top Bar: Search & Advanced Filters (상단 바: 검색 및 고급 필터) ── */}
+      <div className="bg-slate-900 border-b border-slate-800 p-4 shrink-0 z-10">
+        <div className="flex flex-wrap gap-3 items-center">
+          
+          {/* Date Range Preset Buttons (기간 검색 프리셋 버튼) */}
+          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700 overflow-x-auto no-scrollbar">
+            {['Today', 'Week', 'Month', 'Year', 'Custom', 'All'].map(preset => (
+              <button
+                key={preset}
+                onClick={() => setDatePreset(preset)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+                  datePreset === preset ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center gap-2">
-                    {event.type === 'Void' ? <XCircle size={14} className="text-red-500" /> : 
-                     event.type === 'Refund' ? <AlertCircle size={14} className="text-orange-500" /> : 
-                     <CheckCircle2 size={14} className="text-emerald-500" />}
-                    <span className="text-xs font-bold uppercase tracking-tighter">{event.type}</span>
-                  </div>
-                  {/* Amount display with guaranteed number formatting (숫자 포맷이 보장된 금액 표시) */}
-                  <span className="font-mono font-bold text-white text-lg">
-                    ${event.amount.toFixed(2)}
-                  </span>
-                </div>
-                <div className="mt-3 flex justify-between items-end">
-                  <div className="text-[10px] text-slate-500 space-y-0.5">
-                    <p className="flex items-center gap-1"><Calendar size={10} /> {new Date(event.startTime).toLocaleDateString()}</p>
-                    <p className="flex items-center gap-1"><Clock size={10} /> {new Date(event.startTime).toLocaleTimeString()}</p>
-                  </div>
-                  <div className="text-[10px] bg-slate-800 px-2 py-1 rounded text-slate-400 border border-slate-700">
-                    {event.register}
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* ── Right Panel: Video Feed & Receipt (오른쪽 패널: 비디오 피드 및 영수증) ── */}
-        <div className="flex-1 bg-black relative flex items-center justify-center p-12">
-          {/* CAM Indicator (카메라 상태 표시) */}
-          <div className="absolute top-6 left-6 flex items-center gap-3 bg-black/50 backdrop-blur-md px-4 py-2 rounded-full border border-white/10">
-            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-            <span className="text-[10px] font-bold tracking-widest text-white/80">CAM-01 [REGISTER] LIVE FEED</span>
+                {preset}
+              </button>
+            ))}
           </div>
 
+          {/* Custom Date Pickers (사용자 지정 날짜 선택기 - Custom 선택 시 나타남) */}
+          {datePreset === 'Custom' && (
+            <div className="flex items-center gap-2 animate-in fade-in slide-in-from-left-2">
+              <input 
+                type="date" 
+                value={customDateFrom}
+                onChange={(e) => setCustomDateFrom(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500"
+              />
+              <span className="text-slate-500 text-xs">to</span>
+              <input 
+                type="date" 
+                value={customDateTo}
+                onChange={(e) => setCustomDateTo(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500"
+              />
+            </div>
+          )}
+
+          {/* Type & Time Filters (유형 및 시간대 필터) */}
+          <div className="flex gap-2">
+            <select 
+              value={filterType} onChange={(e) => setFilterType(e.target.value)}
+              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500"
+            >
+              <option value="All">All Types</option>
+              <option value="Sale">Sales</option>
+              <option value="Void">Voids</option>
+              <option value="Refund">Refunds</option>
+            </select>
+            <select 
+              value={filterTime} onChange={(e) => setFilterTime(e.target.value)}
+              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500"
+            >
+              <option value="All Day">All Day</option>
+              <option value="Morning">Morning</option>
+              <option value="Afternoon">Afternoon</option>
+              <option value="Evening">Evening</option>
+            </select>
+          </div>
+
+          {/* Search Box (검색창) */}
+          <div className="flex flex-1 min-w-[200px] items-center gap-2 px-3 py-1.5 bg-slate-800 rounded border border-slate-700">
+            <Search size={14} className="text-slate-400" />
+            <input 
+              placeholder="Search ID..."
+              value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-transparent outline-none text-xs w-full text-white placeholder-slate-500"
+            />
+          </div>
+
+          <button onClick={loadData} className="p-1.5 hover:bg-slate-800 rounded border border-slate-700 transition-colors">
+            <RefreshCcw size={16} className={loading ? "animate-spin text-emerald-500" : "text-slate-400"} />
+          </button>
+        </div>
+      </div>
+
+      {/* ── Main Responsive Layout (메인 반응형 레이아웃) ── */}
+      <div className="flex flex-1 overflow-hidden relative">
+        
+        {/* ── Left Panel: List View (왼쪽 패널: 리스트 뷰) ── */}
+        {/* Hidden on mobile if detail is open, visible on desktop (모바일 상세 뷰 열릴 때 숨김, 데스크탑 항상 표시) */}
+        <div className={`w-full md:w-[380px] border-r border-slate-800 overflow-y-auto bg-slate-900/50 flex-col ${isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
+          <div className="p-4 border-b border-slate-800 flex justify-between items-center sticky top-0 bg-slate-900/95 backdrop-blur z-10">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+              {filteredEvents.length} Events Found
+            </span>
+          </div>
+
+          <div className="p-3 space-y-2">
+            {loading ? (
+              <div className="text-center py-10 text-slate-500 text-sm animate-pulse">Syncing events...</div>
+            ) : filteredEvents.length === 0 ? (
+              <div className="text-center py-10 text-slate-600 text-sm">No results match your filters.</div>
+            ) : (
+              filteredEvents.map((event) => (
+                <div 
+                  key={event.eventId}
+                  onClick={() => handleEventClick(event)}
+                  className={`p-3 rounded-lg border transition-all cursor-pointer group ${
+                    selectedEvent?.eventId === event.eventId 
+                      ? "border-emerald-500 bg-emerald-500/10" 
+                      : "border-slate-800 bg-slate-900 hover:border-slate-700"
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-1.5">
+                      {event.type === 'Void' ? <XCircle size={14} className="text-red-500" /> : 
+                       event.type === 'Refund' ? <AlertCircle size={14} className="text-orange-500" /> : 
+                       <CheckCircle2 size={14} className="text-emerald-500" />}
+                      <span className="text-[11px] font-bold uppercase tracking-wider">{event.type}</span>
+                    </div>
+                    <span className="font-mono font-bold text-white">${event.amount.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-end text-[10px] text-slate-500">
+                    <div>
+                      <p>{new Date(event.startTime).toLocaleDateString()}</p>
+                      <p>{new Date(event.startTime).toLocaleTimeString()}</p>
+                    </div>
+                    <div className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 border border-slate-700">
+                      {event.register}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* ── Right Panel: Detail & Video View (오른쪽 패널: 상세 및 비디오 뷰) ── */}
+        {/* Hidden on mobile if detail is closed, visible on desktop (모바일 리스트 뷰일 때 숨김, 데스크탑 항상 표시) */}
+        <div className={`flex-1 bg-black flex-col relative ${!isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
+          
+          {/* Mobile Back Button (모바일 뒤로 가기 버튼) */}
+          <div className="md:hidden absolute top-4 left-4 z-50">
+            <button 
+              onClick={handleBackToList}
+              className="flex items-center gap-1 bg-slate-800/80 backdrop-blur text-white px-3 py-1.5 rounded-full border border-slate-600 shadow-lg"
+            >
+              <ChevronLeft size={16} /> <span className="text-xs font-bold">Back to List</span>
+            </button>
+          </div>
+
+          {/* Camera Indicator (카메라 상태) */}
+          <div className="absolute top-4 right-4 md:left-4 md:right-auto z-40 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-md border border-white/10">
+            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            <span className="text-[10px] font-bold tracking-widest text-white/80 uppercase">CAM-01 LIVE</span>
+          </div>
+
+          {/* Detailed Receipt Overlay (상세 영수증 오버레이) */}
           {selectedEvent ? (
-            <div className="relative z-10 w-full max-w-[320px] bg-white rounded-sm shadow-[0_30px_60px_rgba(0,0,0,0.8)] overflow-hidden font-mono text-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              {/* Visual Header (영수증 상단 색상 바) */}
-              <div className={`h-2 ${
-                selectedEvent.type === 'Void' ? 'bg-red-500' : 
-                selectedEvent.type === 'Refund' ? 'bg-orange-500' : 'bg-emerald-500'
-              }`} />
-              
-              <div className="p-6">
-                <div className="text-center mb-6">
-                  <h3 className="text-sm font-black uppercase tracking-widest mb-1">JM AI Security</h3>
-                  <p className="text-[10px] text-slate-400">Transaction Audit Receipt</p>
+            <div className="flex-1 flex items-center justify-center p-4 overflow-y-auto">
+              {/* Receipt Wrapper matching image_cc40e2.png styling (실사 영수증 래퍼) */}
+              <div className="relative w-full max-w-[340px] bg-white shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-200 animate-in fade-in zoom-in-95 duration-300">
+                
+                {/* Receipt Top Banner (영수증 상단 배너) */}
+                <div className="bg-[#e0e0e0] h-6 flex justify-end items-center px-2 text-slate-400">
+                  <Star size={14} className="fill-current" />
                 </div>
 
-                <div className="flex justify-between text-[10px] mb-4 pb-2 border-b border-slate-100">
-                  <span>DATE: {new Date(selectedEvent.startTime).toLocaleDateString()}</span>
-                  <span>POS: {selectedEvent.register}</span>
-                </div>
-
-                <div className="space-y-3 mb-8 min-h-[100px]">
-                  {selectedEvent.items.length > 0 ? (
-                    selectedEvent.items.map((item, i) => (
-                      <div key={i} className="flex justify-between text-[11px]">
-                        <span className="flex-1 truncate pr-2">{item.name} x{item.qty}</span>
-                        {/* Safe item total calculation (안전한 품목 총액 계산) */}
-                        <span className="font-bold">${(item.price * item.qty).toFixed(2)}</span>
+                {/* Receipt Header block with Green left-border (초록색 왼쪽 테두리가 있는 헤더 블록) */}
+                <div className="flex border-b border-slate-300 bg-white">
+                  <div className={`w-3 flex-shrink-0 ${
+                    selectedEvent.type === 'Void' ? 'bg-red-500' : 
+                    selectedEvent.type === 'Refund' ? 'bg-orange-500' : 'bg-[#5cb85c]'
+                  }`} />
+                  <div className="p-4 flex-1">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h2 className="text-lg font-black text-black tracking-tight">
+                          ${selectedEvent.amount.toFixed(2)} {selectedEvent.type}
+                        </h2>
+                        <p className="text-xs text-slate-600 mt-1">
+                          {new Date(selectedEvent.startTime).toLocaleString('en-US', { 
+                            hour12: true, month: 'short', day: '2-digit', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit'
+                          })}
+                        </p>
                       </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-4 text-[10px] text-slate-300 italic">No items listed (품목 내역 없음)</div>
-                  )}
-                </div>
-
-                <div className="border-t-2 border-double border-slate-200 pt-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold">TOTAL AMOUNT</span>
-                    <span className="text-xl font-black">${selectedEvent.amount.toFixed(2)}</span>
-                  </div>
-                  <div className={`mt-2 text-center py-1 rounded-sm text-[10px] font-bold ${
-                    selectedEvent.type === 'Void' ? 'bg-red-50 text-red-600' : 'text-emerald-600 bg-emerald-50'
-                  }`}>
-                    STATUS: {selectedEvent.type.toUpperCase()}
+                      <div className="flex gap-2 text-slate-400">
+                        <FileText size={16} />
+                        <Printer size={16} />
+                        <MoreVertical size={16} />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-8 pt-4 border-t border-slate-50 flex flex-col items-center gap-2">
-                  <span className="text-[9px] text-slate-400">REF: {selectedEvent.eventId.substring(0, 15)}...</span>
+                {/* Receipt Body (Monospace) (영수증 본문 - 고정폭 폰트) */}
+                <div className="p-5 font-mono text-[11px] md:text-xs text-slate-800 leading-relaxed bg-white">
+                  
+                  {/* Store Info (가게 정보) */}
+                  <div className="mb-4">
+                    <p>Store: JM Cafe</p>
+                    <p>Register: {selectedEvent.register}</p>
+                    <p className="truncate">Employee: {selectedEvent.cashier}</p>
+                  </div>
+
+                  {/* Items List (품목 리스트) */}
+                  <div className="mb-4 space-y-1 min-h-[120px]">
+                    {selectedEvent.items.length > 0 ? (
+                      selectedEvent.items.map((item, i) => (
+                        <div key={i} className="flex justify-between">
+                          <span className="w-6 text-right mr-2">{item.qty}</span>
+                          <span className="flex-1 truncate pr-2">{item.name}</span>
+                          <span className="w-12 text-right">{item.unitPrice.toFixed(2)}</span>
+                          <span className="w-14 text-right font-bold">{item.totalPrice.toFixed(2)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-4 text-slate-400 italic">No items available</div>
+                    )}
+                  </div>
+
+                  {/* Totals Section (합계 섹션) */}
+                  <div className="border-t border-dashed border-slate-400 pt-3 mb-4 pl-12 pr-2">
+                    <div className="flex justify-between">
+                      <span>Subtotal:</span>
+                      <span>$ {selectedEvent.amount.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-sm mt-1">
+                      <span>Total:</span>
+                      <span>$ {selectedEvent.amount.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  {/* Footer Stats (하단 통계) */}
+                  <div className="mt-6 mb-8">
+                    <p>Total # Items: {selectedEvent.items.reduce((acc, item) => acc + item.qty, 0)}</p>
+                  </div>
+
+                  {/* ID & Branding (ID 및 브랜드 표시) */}
+                  <div className="text-center text-[10px] text-slate-400 pt-4 border-t border-slate-200">
+                    <p className="mb-1 truncate opacity-50">ID: {selectedEvent.eventId}</p>
+                    <p className="font-bold text-emerald-600/70 tracking-widest mt-2">POWERED BY JM TECH ONE</p>
+                  </div>
+
                 </div>
               </div>
             </div>
           ) : (
-            <div className="text-slate-700 flex flex-col items-center gap-4">
-              <Monitor size={48} strokeWidth={1} />
-              <p className="text-sm font-medium tracking-wide">SELECT AN EVENT TO VIEW DETAILS (이벤트를 선택하세요)</p>
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-600">
+              <Monitor size={48} strokeWidth={1} className="mb-4" />
+              <p className="text-sm tracking-widest">AWAITING SELECTION</p>
             </div>
           )}
         </div>
