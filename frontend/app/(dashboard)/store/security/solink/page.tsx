@@ -33,15 +33,18 @@ export default function SolinkProDashboard() {
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedEvent, setSelectedEvent] = useState<SolinkEvent | null>(null);
 
-  // Mobile Drill-down State (모바일 화면 전환 상태)
+  // Mobile Drill-down State for responsive view
+  // (반응형 뷰를 위한 모바일 화면 전환 상태)
   const [isMobileDetailOpen, setIsMobileDetailOpen] = useState<boolean>(false);
 
-  // Advanced Filter States (고급 필터 상태)
+  // Advanced Filter States
+  // (고급 필터 상태)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('All');
   const [filterTime, setFilterTime] = useState('All Day');
   
-  // Date Range States (기간 검색 상태)
+  // Date Range States
+  // (기간 검색 상태)
   const [datePreset, setDatePreset] = useState('Today'); // 'Today', 'Week', 'Month', 'Year', 'Custom', 'All'
   const [customDateFrom, setCustomDateFrom] = useState('');
   const [customDateTo, setCustomDateTo] = useState('');
@@ -60,11 +63,13 @@ export default function SolinkProDashboard() {
         const normalizedData = result.data.map((item: any) => {
           const details = item.details || {};
           
-          // Guaranteed amount extraction (보장된 금액 추출)
+          // Guaranteed amount extraction to prevent $0.00
+          // ($0.00을 방지하기 위한 보장된 금액 추출)
           const rawAmount = details["Total amount"] ?? details["Total price"] ?? item.amount ?? 0;
           const parsedAmount = parseFloat(rawAmount) || 0;
 
-          // Transaction type normalization (거래 유형 정규화)
+          // Transaction type normalization
+          // (거래 유형 정규화)
           let eventType = "Sale";
           const statusStr = (details["Status"] || item.subtype || item.type || "").toUpperCase();
           if (statusStr.includes("VOID")) eventType = "Void";
@@ -78,7 +83,8 @@ export default function SolinkProDashboard() {
             register: details["Register ID"] || details["Store Number"] || "JM-POS-01",
             cashier: item.cashier || details["Employee ID"] || "08afabe6-09fb...",
             
-            // Map items with safety checks (안전 검사를 포함한 품목 매핑)
+            // Map items with safety checks
+            // (안전 검사를 포함한 품목 매핑)
             items: Array.isArray(details.items) ? details.items.map((i: any) => {
               const q = parseInt(i.quantity || i.qty || 1, 10);
               const p = parseFloat(i.unitPrice || i.price || 0);
@@ -92,10 +98,12 @@ export default function SolinkProDashboard() {
           };
         });
 
-        // Filter out completely empty records (완전히 비어있는 기록 제외)
+        // Filter out completely empty records
+        // (완전히 비어있는 기록 제외)
         const validEvents = normalizedData.filter(e => e.amount > 0 || e.items.length > 0);
 
-        // Sort descending by time (최신순 정렬)
+        // Sort descending by time
+        // (최신순 정렬)
         validEvents.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
         setEvents(validEvents);
@@ -166,24 +174,30 @@ export default function SolinkProDashboard() {
 
   const handleEventClick = (event: SolinkEvent) => {
     setSelectedEvent(event);
-    setIsMobileDetailOpen(true); // Open detail view on mobile (모바일에서 상세 뷰 열기)
+    // Open detail view on mobile
+    // (모바일에서 상세 뷰 열기)
+    setIsMobileDetailOpen(true); 
   };
 
   const handleBackToList = () => {
-    setIsMobileDetailOpen(false); // Go back to list on mobile (모바일에서 리스트로 돌아가기)
+    // Go back to list on mobile
+    // (모바일에서 리스트로 돌아가기)
+    setIsMobileDetailOpen(false); 
   };
 
   // ── UI Components (UI 컴포넌트) ─────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
+    // ✨ CRITICAL FIX: Changed h-screen to h-full w-full so it fits perfectly inside DashboardShell on mobile
+    // (중요 수정: 모바일의 DashboardShell 안에 완벽히 맞도록 h-screen을 h-full w-full로 변경했습니다)
+    <div className="flex flex-col h-full w-full bg-slate-950 text-slate-200 font-sans overflow-x-hidden md:overflow-hidden relative">
       
       {/* ── Top Bar: Search & Advanced Filters (상단 바: 검색 및 고급 필터) ── */}
-      <div className="bg-slate-900 border-b border-slate-800 p-4 shrink-0 z-10">
+      <div className="bg-slate-900 border-b border-slate-800 p-4 shrink-0 z-10 w-full">
         <div className="flex flex-wrap gap-3 items-center">
           
           {/* Date Range Preset Buttons (기간 검색 프리셋 버튼) */}
-          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700 overflow-x-auto no-scrollbar">
+          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700 overflow-x-auto no-scrollbar max-w-full">
             {['Today', 'Week', 'Month', 'Year', 'Custom', 'All'].map(preset => (
               <button
                 key={preset}
@@ -197,30 +211,30 @@ export default function SolinkProDashboard() {
             ))}
           </div>
 
-          {/* Custom Date Pickers (사용자 지정 날짜 선택기 - Custom 선택 시 나타남) */}
+          {/* Custom Date Pickers (사용자 지정 날짜 선택기) */}
           {datePreset === 'Custom' && (
             <div className="flex items-center gap-2 animate-in fade-in slide-in-from-left-2">
               <input 
                 type="date" 
                 value={customDateFrom}
                 onChange={(e) => setCustomDateFrom(e.target.value)}
-                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500"
+                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500 w-full max-w-[120px]"
               />
               <span className="text-slate-500 text-xs">to</span>
               <input 
                 type="date" 
                 value={customDateTo}
                 onChange={(e) => setCustomDateTo(e.target.value)}
-                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500"
+                className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1.5 outline-none focus:border-emerald-500 w-full max-w-[120px]"
               />
             </div>
           )}
 
           {/* Type & Time Filters (유형 및 시간대 필터) */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 w-full md:w-auto">
             <select 
               value={filterType} onChange={(e) => setFilterType(e.target.value)}
-              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500"
+              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500 flex-1 md:flex-none"
             >
               <option value="All">All Types</option>
               <option value="Sale">Sales</option>
@@ -229,7 +243,7 @@ export default function SolinkProDashboard() {
             </select>
             <select 
               value={filterTime} onChange={(e) => setFilterTime(e.target.value)}
-              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500"
+              className="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded px-3 py-1.5 outline-none focus:border-emerald-500 flex-1 md:flex-none"
             >
               <option value="All Day">All Day</option>
               <option value="Morning">Morning</option>
@@ -239,26 +253,28 @@ export default function SolinkProDashboard() {
           </div>
 
           {/* Search Box (검색창) */}
-          <div className="flex flex-1 min-w-[200px] items-center gap-2 px-3 py-1.5 bg-slate-800 rounded border border-slate-700">
+          <div className="flex flex-1 min-w-[200px] items-center gap-2 px-3 py-1.5 bg-slate-800 rounded border border-slate-700 w-full md:w-auto">
             <Search size={14} className="text-slate-400" />
             <input 
-              placeholder="Search ID..."
+              placeholder="Search POS ID..."
               value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-transparent outline-none text-xs w-full text-white placeholder-slate-500"
             />
           </div>
 
-          <button onClick={loadData} className="p-1.5 hover:bg-slate-800 rounded border border-slate-700 transition-colors">
+          {/* Refresh Button (새로고침 버튼) */}
+          <button onClick={loadData} className="p-1.5 hover:bg-slate-800 rounded border border-slate-700 transition-colors hidden md:block">
             <RefreshCcw size={16} className={loading ? "animate-spin text-emerald-500" : "text-slate-400"} />
           </button>
         </div>
       </div>
 
       {/* ── Main Responsive Layout (메인 반응형 레이아웃) ── */}
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-1 overflow-hidden relative w-full">
         
         {/* ── Left Panel: List View (왼쪽 패널: 리스트 뷰) ── */}
-        {/* Hidden on mobile if detail is open, visible on desktop (모바일 상세 뷰 열릴 때 숨김, 데스크탑 항상 표시) */}
+        {/* Hidden on mobile if detail is open, visible on desktop */}
+        {/* (모바일 상세 뷰 열릴 때 숨김, 데스크탑 항상 표시) */}
         <div className={`w-full md:w-[380px] border-r border-slate-800 overflow-y-auto bg-slate-900/50 flex-col ${isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
           <div className="p-4 border-b border-slate-800 flex justify-between items-center sticky top-0 bg-slate-900/95 backdrop-blur z-10">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
@@ -266,7 +282,7 @@ export default function SolinkProDashboard() {
             </span>
           </div>
 
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-2 pb-20 md:pb-3">
             {loading ? (
               <div className="text-center py-10 text-slate-500 text-sm animate-pulse">Syncing events...</div>
             ) : filteredEvents.length === 0 ? (
@@ -307,37 +323,44 @@ export default function SolinkProDashboard() {
         </div>
 
         {/* ── Right Panel: Detail & Video View (오른쪽 패널: 상세 및 비디오 뷰) ── */}
-        {/* Hidden on mobile if detail is closed, visible on desktop (모바일 리스트 뷰일 때 숨김, 데스크탑 항상 표시) */}
-        <div className={`flex-1 bg-black flex-col relative ${!isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
+        {/* Hidden on mobile if detail is closed, visible on desktop */}
+        {/* (모바일 리스트 뷰일 때 숨김, 데스크탑 항상 표시) */}
+        <div className={`flex-1 bg-black flex-col relative w-full ${!isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
           
-          {/* Mobile Back Button (모바일 뒤로 가기 버튼) */}
+          {/* Mobile Back Button */}
+          {/* (모바일 뒤로 가기 버튼) */}
           <div className="md:hidden absolute top-4 left-4 z-50">
             <button 
               onClick={handleBackToList}
-              className="flex items-center gap-1 bg-slate-800/80 backdrop-blur text-white px-3 py-1.5 rounded-full border border-slate-600 shadow-lg"
+              className="flex items-center gap-1 bg-slate-800/80 backdrop-blur text-white px-3 py-1.5 rounded-full border border-slate-600 shadow-lg active:scale-95 transition-transform"
             >
               <ChevronLeft size={16} /> <span className="text-xs font-bold">Back to List</span>
             </button>
           </div>
 
-          {/* Camera Indicator (카메라 상태) */}
+          {/* Camera Indicator */}
+          {/* (카메라 상태) */}
           <div className="absolute top-4 right-4 md:left-4 md:right-auto z-40 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-md border border-white/10">
             <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
             <span className="text-[10px] font-bold tracking-widest text-white/80 uppercase">CAM-01 LIVE</span>
           </div>
 
-          {/* Detailed Receipt Overlay (상세 영수증 오버레이) */}
+          {/* Detailed Receipt Overlay */}
+          {/* (상세 영수증 오버레이) */}
           {selectedEvent ? (
-            <div className="flex-1 flex items-center justify-center p-4 overflow-y-auto">
-              {/* Receipt Wrapper matching image_cc40e2.png styling (실사 영수증 래퍼) */}
-              <div className="relative w-full max-w-[340px] bg-white shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-200 animate-in fade-in zoom-in-95 duration-300">
+            <div className="flex-1 flex items-center justify-center p-4 overflow-y-auto w-full">
+              {/* Receipt Wrapper matching styling */}
+              {/* (실사 영수증 래퍼) */}
+              <div className="relative w-full max-w-[340px] bg-white shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-200 animate-in fade-in zoom-in-95 duration-300 mx-auto mt-12 md:mt-0">
                 
-                {/* Receipt Top Banner (영수증 상단 배너) */}
+                {/* Receipt Top Banner */}
+                {/* (영수증 상단 배너) */}
                 <div className="bg-[#e0e0e0] h-6 flex justify-end items-center px-2 text-slate-400">
                   <Star size={14} className="fill-current" />
                 </div>
 
-                {/* Receipt Header block with Green left-border (초록색 왼쪽 테두리가 있는 헤더 블록) */}
+                {/* Receipt Header block with left-border */}
+                {/* (왼쪽 테두리가 있는 헤더 블록) */}
                 <div className="flex border-b border-slate-300 bg-white">
                   <div className={`w-3 flex-shrink-0 ${
                     selectedEvent.type === 'Void' ? 'bg-red-500' : 
@@ -365,17 +388,20 @@ export default function SolinkProDashboard() {
                   </div>
                 </div>
 
-                {/* Receipt Body (Monospace) (영수증 본문 - 고정폭 폰트) */}
+                {/* Receipt Body (Monospace) */}
+                {/* (영수증 본문 - 고정폭 폰트) */}
                 <div className="p-5 font-mono text-[11px] md:text-xs text-slate-800 leading-relaxed bg-white">
                   
-                  {/* Store Info (가게 정보) */}
+                  {/* Store Info */}
+                  {/* (가게 정보) */}
                   <div className="mb-4">
                     <p>Store: JM Cafe</p>
                     <p>Register: {selectedEvent.register}</p>
                     <p className="truncate">Employee: {selectedEvent.cashier}</p>
                   </div>
 
-                  {/* Items List (품목 리스트) */}
+                  {/* Items List */}
+                  {/* (품목 리스트) */}
                   <div className="mb-4 space-y-1 min-h-[120px]">
                     {selectedEvent.items.length > 0 ? (
                       selectedEvent.items.map((item, i) => (
@@ -391,7 +417,8 @@ export default function SolinkProDashboard() {
                     )}
                   </div>
 
-                  {/* Totals Section (합계 섹션) */}
+                  {/* Totals Section */}
+                  {/* (합계 섹션) */}
                   <div className="border-t border-dashed border-slate-400 pt-3 mb-4 pl-12 pr-2">
                     <div className="flex justify-between">
                       <span>Subtotal:</span>
@@ -403,12 +430,14 @@ export default function SolinkProDashboard() {
                     </div>
                   </div>
 
-                  {/* Footer Stats (하단 통계) */}
+                  {/* Footer Stats */}
+                  {/* (하단 통계) */}
                   <div className="mt-6 mb-8">
                     <p>Total # Items: {selectedEvent.items.reduce((acc, item) => acc + item.qty, 0)}</p>
                   </div>
 
-                  {/* ID & Branding (ID 및 브랜드 표시) */}
+                  {/* ID & Branding */}
+                  {/* (ID 및 브랜드 표시) */}
                   <div className="text-center text-[10px] text-slate-400 pt-4 border-t border-slate-200">
                     <p className="mb-1 truncate opacity-50">ID: {selectedEvent.eventId}</p>
                     <p className="font-bold text-emerald-600/70 tracking-widest mt-2">POWERED BY JM TECH ONE</p>
@@ -420,7 +449,7 @@ export default function SolinkProDashboard() {
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-600">
               <Monitor size={48} strokeWidth={1} className="mb-4" />
-              <p className="text-sm tracking-widest">AWAITING SELECTION</p>
+              <p className="text-sm tracking-widest text-center px-4">AWAITING SELECTION<br/>(이벤트를 선택하세요)</p>
             </div>
           )}
         </div>
