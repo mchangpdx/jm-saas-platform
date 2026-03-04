@@ -10,14 +10,18 @@ import { env } from '../config/env.js';
 import { getPaymentAdapter } from '../adapters/payment/factory.js';
 import { getPosAdapter }     from '../adapters/pos/factory.js';
 import { ORDER_QUEUE_NAME }  from './producer.js';
+import Redis from 'ioredis'; // ✨ 추가된 부분: 클라우드 URL 접속용 라이브러리
 
 // Separate IORedis connection options — Worker uses blocking XREAD commands that must not
 // share a connection with the Queue producer (워커는 블로킹 XREAD를 사용하므로 프로듀서와 연결 분리 필수)
-const connection = {
-  host:     env.redis.host,
-  port:     env.redis.port,
-  password: env.redis.password,
-};
+// ✨ 수정된 부분: Render의 REDIS_URL이 있으면 그걸 쓰고, 없으면 로컬 설정을 씁니다.
+const connection = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
+  : {
+      host:     env.redis.host,
+      port:     env.redis.port,
+      password: env.redis.password,
+    };
 
 // ── Job Processor ─────────────────────────────────────────────────────────────
 

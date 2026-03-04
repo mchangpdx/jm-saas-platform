@@ -5,13 +5,24 @@ import { env } from '../config/env.js';
 
 export const ORDER_QUEUE_NAME = 'order-queue';
 
+// BullMQ order queue producer — enqueues incoming voice orders for async processing
+// (BullMQ 주문 큐 프로듀서 — 수신된 음성 주문을 비동기 처리용 큐에 등록)
+import { Queue } from 'bullmq';
+import { env } from '../config/env.js';
+import Redis from 'ioredis'; // ✨ 추가된 부분: 클라우드 URL 접속용 라이브러리
+
+export const ORDER_QUEUE_NAME = 'order-queue';
+
 // BullMQ manages its own IORedis connection from options — do NOT share the app-level redisClient
 // (BullMQ는 옵션에서 자체 IORedis 연결 관리 — 앱 레벨 redisClient 공유 금지)
-const connection = {
-  host:     env.redis.host,
-  port:     env.redis.port,
-  password: env.redis.password,
-};
+// ✨ 수정된 부분: Render의 REDIS_URL이 있으면 그걸 쓰고, 없으면 로컬 설정을 씁니다.
+const connection = process.env.REDIS_URL
+  ? new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: null })
+  : {
+      host:     env.redis.host,
+      port:     env.redis.port,
+      password: env.redis.password,
+    };
 
 // Singleton Queue instance — created once and reused for all enqueue calls
 // (싱글톤 큐 인스턴스 — 한 번 생성 후 모든 enqueue 호출에서 재사용)
