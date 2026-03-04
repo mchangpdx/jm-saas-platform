@@ -175,13 +175,13 @@ export default function AgencySettingsPage() {
       {/* Settings card (설정 카드) */}
       <div className="rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
 
-        {/* Tab bar (탭 바) */}
-        <div className="flex border-b border-gray-200 px-4 dark:border-gray-800">
+        {/* Tab bar — horizontally scrollable on mobile, invisible scrollbar (모바일 가로 스크롤 탭 바 — 스크롤바 숨김) */}
+        <div className="no-scrollbar flex overflow-x-auto border-b border-gray-200 px-4 dark:border-gray-800">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              className={`flex items-center gap-2 border-b-2 px-4 py-3.5 text-sm font-medium transition-colors focus:outline-none
+              className={`flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3.5 text-sm font-medium transition-colors focus:outline-none
                 ${activeTab === id
                   ? 'border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-400'
                   : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'}`}

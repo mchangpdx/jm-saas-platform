@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Hide scrollbar while preserving scroll functionality (스크롤 기능을 유지하면서 스크롤바 숨김) */
+/* Used on horizontally-scrollable tab bars for a native app-like feel on mobile (모바일 네이티브 앱 느낌을 위해 가로 스크롤 탭 바에 사용) */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;            /* Chrome, Safari, Edge (크롬, 사파리, 엣지) */
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none; /* IE 10+ (IE 10 이상) */
+    scrollbar-width: none;    /* Firefox (파이어폭스) */
+  }
+}
