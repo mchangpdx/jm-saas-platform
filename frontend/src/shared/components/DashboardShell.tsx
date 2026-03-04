@@ -121,6 +121,7 @@ const STORE_NAV: NavItem[] = [
     icon:  ShieldAlert,
     children: [
       { href: '/store/security/pos-overlay',   label: 'POS Overlay',   icon: Monitor },
+      { href: '/store/security/solink', label: 'Solink Monitoring', icon: Monitor },
       { href: '/store/security/prevent-theft', label: 'Prevent Theft', icon: Eye     },
     ],
   },
