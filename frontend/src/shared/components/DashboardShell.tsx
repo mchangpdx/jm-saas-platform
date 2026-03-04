@@ -93,6 +93,7 @@ const AGENCY_NAV: NavItem[] = [
     icon:  ShieldAlert,
     children: [
       { href: '/agency/security/pos-overlay',   label: 'POS Overlay',   icon: Monitor },
+      { href: '/agency/security/solink', label: 'Solink Monitoring', icon: Monitor },
       { href: '/agency/security/prevent-theft', label: 'Prevent Theft', icon: Eye     },
     ],
   },
