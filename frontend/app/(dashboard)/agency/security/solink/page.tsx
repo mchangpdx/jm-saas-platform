@@ -37,7 +37,7 @@ export default function SolinkProDashboard() {
   const [filterDate, setFilterDate] = useState('');
   const [filterTime, setFilterTime] = useState('All Day');
 
-  // ── Data Fetching & Bulletproof Mapping (데이터 로드 및 방탄 매핑) ────────
+  // ── Data Fetching & Solink Precision Mapping (데이터 로드 및 솔링크 정밀 매핑) ──
 
   const loadData = async () => {
     setLoading(true);
@@ -48,33 +48,55 @@ export default function SolinkProDashboard() {
       const result = await response.json();
       
       if (result.success && Array.isArray(result.data)) {
-        // Robust mapping to absolutely prevent $0.00 displays
-        // (0달러 표시를 완벽히 차단하기 위한 강력한 데이터 매핑)
+        
+        // Map the exact JSON structure provided by the Solink API
+        // (Solink API가 제공하는 정확한 JSON 구조를 매핑합니다)
         const normalizedData = result.data.map((item: any) => {
-          // Check every possible field name Solink might use for the total price
-          // (솔링크가 총액에 사용할 수 있는 모든 필드명을 검사하여 금액을 추출합니다)
-          const rawAmount = item.amount ?? item.totalAmount ?? item.total ?? item.gross_amount ?? item.net_amount ?? 0;
+          
+          // Access the nested 'details' object where Solink hides the real POS data
+          // (Solink가 실제 POS 데이터를 숨겨둔 중첩된 'details' 객체에 접근합니다)
+          const details = item.details || {};
+
+          // Extract the exact fields based on the F12 Network payload
+          // (F12 네트워크 페이로드를 기반으로 정확한 필드를 추출합니다)
+          const rawAmount = details["Total amount"] ?? details["Total price"] ?? item.amount ?? 0;
           const parsedAmount = parseFloat(rawAmount) || 0;
 
+          // Determine transaction type safely (Void, Refund, or Sale)
+          // (거래 유형을 안전하게 판별합니다 - 취소, 환불 또는 판매)
+          let eventType = "Sale";
+          const statusStr = (details["Status"] || item.subtype || item.type || "").toUpperCase();
+          if (statusStr.includes("VOID")) eventType = "Void";
+          else if (statusStr.includes("REFUND") || statusStr.includes("RETURN")) eventType = "Refund";
+
           return {
-            eventId: item.eventId || `EVT-${Math.random().toString(36).substr(2, 9)}`,
+            eventId: item.id || `EVT-${Math.random().toString(36).substr(2, 9)}`,
             startTime: item.startTime || new Date().toISOString(),
-            type: item.type || 'Sale',
+            type: eventType,
             amount: parsedAmount,
-            register: item.register || item.posId || item.terminalId || 'POS-01',
-            cashier: item.cashier || item.employeeId || 'System',
-            items: Array.isArray(item.items) ? item.items.map((i: any) => ({
-              name: i.name || i.description || 'Unknown Item',
-              qty: parseInt(i.qty || i.quantity || 1, 10),
-              // Check possible fields for item price
-              // (품목 가격에 대한 모든 가능한 필드명을 검사합니다)
-              price: parseFloat(i.price || i.unitPrice || i.cost || 0)
+            // Solink uses "Register ID" with a space
+            // (Solink는 공백이 포함된 "Register ID"를 사용합니다)
+            register: details["Register ID"] || details["Store Number"] || "POS-01",
+            cashier: "System", // Or extract from receipt text if available (또는 가능할 경우 영수증 텍스트에서 추출)
+            
+            // Map the items array inside details
+            // (details 안의 items 배열을 매핑합니다)
+            items: Array.isArray(details.items) ? details.items.map((i: any) => ({
+              // Solink uses "description", "quantity", and "unitPrice"
+              // (Solink는 "description", "quantity", "unitPrice" 필드를 사용합니다)
+              name: i.description || i.name || 'Unknown Item',
+              qty: parseInt(i.quantity || i.qty || 1, 10),
+              price: parseFloat(i.unitPrice || i.price || 0)
             })) : []
           };
         });
 
-        setEvents(normalizedData);
-        if (normalizedData.length > 0) setSelectedEvent(normalizedData[0]);
+        // Filter out any completely empty events just in case
+        // (혹시 모를 완전히 비어있는 이벤트를 필터링하여 제외합니다)
+        const validEvents = normalizedData.filter(e => e.amount > 0 || e.items.length > 0);
+
+        setEvents(validEvents);
+        if (validEvents.length > 0) setSelectedEvent(validEvents[0]);
       }
     } catch (error) {
       console.error("Failed to load Solink data (솔링크 데이터 로드 실패):", error);
@@ -92,7 +114,7 @@ export default function SolinkProDashboard() {
       // 1. Type Filter (유형 필터)
       if (filterType !== 'All' && event.type !== filterType) return false;
 
-      // 2. Date Filter (날짜 필터 - YYYY-MM-DD format exact match)
+      // 2. Date Filter (날짜 필터 - YYYY-MM-DD)
       if (filterDate) {
         const eventDate = new Date(event.startTime).toISOString().split('T')[0];
         if (eventDate !== filterDate) return false;
@@ -106,7 +128,7 @@ export default function SolinkProDashboard() {
         if (filterTime === 'Evening' && (hour < 18 && hour >= 6)) return false;
       }
 
-      // 4. Text Search: Event ID or POS ID (텍스트 검색: 이벤트 ID 또는 POS ID)
+      // 4. Text Search (텍스트 검색)
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         const matchReg = event.register.toLowerCase().includes(query);
@@ -297,7 +319,7 @@ export default function SolinkProDashboard() {
                 </div>
 
                 <div className="mt-8 pt-4 border-t border-slate-50 flex flex-col items-center gap-2">
-                  <span className="text-[9px] text-slate-400">REF: {selectedEvent.eventId}</span>
+                  <span className="text-[9px] text-slate-400">REF: {selectedEvent.eventId.substring(0, 15)}...</span>
                 </div>
               </div>
             </div>
