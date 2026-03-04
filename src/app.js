@@ -212,6 +212,50 @@ app.get('/', async (req, res) => {
   }
 });
 
+// 프론트엔드에서 솔링크 이벤트를 검색할 수 있도록 뚫어주는 정식 API
+app.get('/api/solink/events', async (req, res) => {
+    try {
+        // 1. 프론트엔드에서 보낸 검색 조건(날짜 등)을 받습니다. (안 보내면 기본 7일)
+        const days = req.query.days ? parseInt(req.query.days) : 7;
+        
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(endDate.getDate() - days);
+
+        // 2. 솔링크 토큰 발급 (이전에 쓰시던 getSolinkToken 함수가 있다면 그걸 쓰셔도 됩니다)
+        const tokenResponse = await axios.post(
+            "https://api-prod-us-west-2.solinkcloud.com/v2/oauth/token", 
+            {
+                client_id: "7df388c42e968295f2747890b8695cb1", 
+                client_secret: "1L0/pk/u4VvKu4nUNhb1tByDgZXSvwi8PLS1BCjINOaM5VxcD5um7MKhEYMG1TSGlZXT84c=", 
+                audience: "https://prod.solinkcloud.com/", 
+                grant_type: "client_credentials" 
+            },
+            { headers: { "x-api-key": "FWcxTFalhW5ZNOxmgKUGW38EtLHA4PuM75BUa7jW" } }
+        );
+        const token = tokenResponse.data.access_token;
+
+        // 3. 솔링크에서 데이터 검색
+        const eventsResponse = await axios.get(
+            `https://api-prod-us-west-2.solinkcloud.com/v2/events?startTime=${startDate.toISOString()}&endTime=${endDate.toISOString()}`,
+            {
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "x-api-key": "FWcxTFalhW5ZNOxmgKUGW38EtLHA4PuM75BUa7jW"
+                }
+            }
+        );
+
+        // 4. 검색된 결과를 프론트엔드로 전달!
+        const events = eventsResponse.data.events || eventsResponse.data;
+        res.status(200).json({ success: true, data: events });
+
+    } catch (error) {
+        console.error("Solink API Error:", error.message);
+        res.status(500).json({ success: false, message: "솔링크 데이터 조회 실패" });
+    }
+});
+
 // ── 404 Handler ───────────────────────────────────────────────────────────────
 
 // Catch unmatched routes and return structured 404 (매칭되지 않은 라우트 처리 — 구조화된 404 반환)
