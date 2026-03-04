@@ -3,13 +3,19 @@ import Redis from 'ioredis';
 import { env } from './env.js';
 
 // BullMQ requires maxRetriesPerRequest: null for blocking commands (BullMQ 블로킹 명령을 위해 maxRetriesPerRequest: null 필수)
-export const redisClient = new Redis({
-  host: env.redis.host,
-  port: env.redis.port,
-  password: env.redis.password,
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-});
+// Render의 통짜 주소(REDIS_URL)가 있으면 우선 사용하고, 없으면 로컬 방식을 사용합니다.
+export const redisClient = process.env.REDIS_URL 
+  ? new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    })
+  : new Redis({
+      host: env.redis.host,
+      port: env.redis.port,
+      password: env.redis.password,
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
 
 redisClient.on('connect', () => {
   console.log(`[Redis] Connected to ${env.redis.host}:${env.redis.port} (Redis 연결 성공)`);
