@@ -2,13 +2,6 @@
 // (BullMQ 주문 큐 프로듀서 — 수신된 음성 주문을 비동기 처리용 큐에 등록)
 import { Queue } from 'bullmq';
 import { env } from '../config/env.js';
-
-export const ORDER_QUEUE_NAME = 'order-queue';
-
-// BullMQ order queue producer — enqueues incoming voice orders for async processing
-// (BullMQ 주문 큐 프로듀서 — 수신된 음성 주문을 비동기 처리용 큐에 등록)
-import { Queue } from 'bullmq';
-import { env } from '../config/env.js';
 import Redis from 'ioredis'; // ✨ 추가된 부분: 클라우드 URL 접속용 라이브러리
 
 export const ORDER_QUEUE_NAME = 'order-queue';
