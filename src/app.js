@@ -13,6 +13,7 @@ import { aiRouter }       from './routes/aiRoutes.js';
 import { syncRouter }     from './routes/syncRoutes.js';
 import { setupWebSocket } from './websocket/llmServer.js';
 import './jobs/cronJobs.js'; // Activate the daily menu sync scheduler on boot (부팅 시 일별 메뉴 동기화 스케줄러 활성화)
+import solinkRoutes from './routes/solinkRoutes.js'; // ★ Import the new router
 
 const app = express();
 
@@ -88,6 +89,9 @@ app.use('/api/ai', aiRouter);
 // Mount sync router — Expert Mode (Method B) POS → staging → AI menu pipeline
 // (동기화 라우터 마운트 — 전문가 모드(방법 B) POS → 스테이징 → AI 메뉴 파이프라인)
 app.use('/api/sync', syncRouter);
+
+// ★ Mount the router to a specific API path (Solink Router)
+app.use('/api/solink', solinkRoutes);
 
 // ── Root Route — OAuth callback or health check ───────────────────────────────
 //
