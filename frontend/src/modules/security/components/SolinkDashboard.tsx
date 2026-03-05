@@ -9,7 +9,7 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   RefreshCcw, AlertCircle, CheckCircle2, XCircle, Monitor,
-  ChevronLeft, Star, Printer, MoreVertical, FileText, Camera, Loader2,
+  ChevronLeft, Star, Printer, MoreVertical, FileText, Camera, Loader2, ExternalLink,
 } from 'lucide-react';
 import { getCameras, getVideoLink, SolinkCamera } from '@/services/api/solinkService';
 
@@ -53,8 +53,7 @@ export default function SolinkDashboard() {
   const [cameras,        setCameras       ] = useState<SolinkCamera[]>([]);
   // Default to the known correct camera ID; overridden by dropdown selection (알려진 올바른 카메라 ID를 기본값으로 사용; 드롭다운 선택으로 재정의 가능)
   const [selectedCamera, setSelectedCamera] = useState('3f34c890-17fb-11f1-a67a-af67afbf5812');
-  const [videoUrl,       setVideoUrl      ] = useState<string | null>(null);
-  const [videoLoading,   setVideoLoading  ] = useState(false);
+  const [videoLoading, setVideoLoading] = useState(false); // True while fetching video URL for popup (팝업용 비디오 URL 조회 중 true)
 
   // ── Filter state (필터 상태) ────────────────────────────────────────────────
   const [searchQuery,    setSearchQuery   ] = useState('');
@@ -136,20 +135,22 @@ export default function SolinkDashboard() {
 
   useEffect(() => { loadData(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch video URL whenever selected event or camera changes (이벤트 또는 카메라 변경 시 비디오 URL 조회)
+  // Fetch video URL on event/camera change and open in a named popup (이벤트/카메라 변경 시 비디오 URL 조회 후 고정 이름 팝업으로 열기)
   useEffect(() => {
-    if (!selectedEvent || !selectedCamera) {
-      setVideoUrl(null);
-      return;
-    }
+    if (!selectedEvent || !selectedCamera) return;
     let cancelled = false;
     setVideoLoading(true);
-    setVideoUrl(null);
     getVideoLink(selectedCamera, selectedEvent.startTime).then(url => {
-      if (!cancelled) {
-        setVideoUrl(url);
-        setVideoLoading(false);
-      }
+      if (cancelled) return;
+      setVideoLoading(false);
+      if (!url) return;
+      // Open in a named popup — existing window is reused, no duplicate popups
+      // (고정된 이름의 팝업으로 열기 — 이미 열린 창은 재활용되어 중복 팝업 없음)
+      window.open(
+        url,
+        'SolinkVideoPlayer',
+        'width=1280,height=720,resizable=yes,scrollbars=no,toolbar=no,menubar=no,location=no,status=no',
+      );
     });
     return () => { cancelled = true; };
   }, [selectedEvent, selectedCamera]);
@@ -362,30 +363,22 @@ export default function SolinkDashboard() {
             </span>
           </div>
 
-          {/* Video background — real iframe from Solink when URL available, dark placeholder otherwise */}
-          {/* (Solink URL이 있으면 실제 iframe, 없으면 어두운 플레이스홀더) */}
-          <div className="absolute inset-0">
+          {/* Dark video background — video plays in a separate named popup, not inline */}
+          {/* (어두운 비디오 배경 — 비디오는 인라인이 아닌 별도의 고정 이름 팝업에서 재생) */}
+          <div className="absolute inset-0 bg-slate-950 flex items-center justify-center">
             {videoLoading ? (
-              <div className="w-full h-full flex items-center justify-center bg-slate-950">
-                <Loader2 size={32} className="text-emerald-500 animate-spin" />
+              // Loading spinner while fetching video URL (비디오 URL 조회 중 로딩 스피너)
+              <div className="flex flex-col items-center gap-3">
+                <Loader2 size={28} className="text-emerald-500 animate-spin" />
+                <p className="text-slate-600 text-xs tracking-widest uppercase">Opening video…</p>
               </div>
-            ) : videoUrl ? (
-              <iframe
-                src={videoUrl}
-                title="Solink Video Playback"
-                className="w-full h-full border-0"
-                allow="autoplay; fullscreen"
-                allowFullScreen
-              />
-            ) : (
-              /* Static noise / dark placeholder when no video available */
-              /* (비디오 없을 때 정적 노이즈 / 어두운 플레이스홀더) */
-              <div className="w-full h-full bg-slate-950 flex items-center justify-center">
-                {selectedEvent && selectedCamera ? (
-                  <p className="text-slate-700 text-xs tracking-widest uppercase">Video unavailable</p>
-                ) : null}
+            ) : selectedEvent ? (
+              // Hint shown after popup has opened or when no URL was returned (팝업 열린 후 또는 URL 없을 때 표시되는 힌트)
+              <div className="flex flex-col items-center gap-2 text-slate-700">
+                <ExternalLink size={28} strokeWidth={1.2} />
+                <p className="text-xs tracking-widest uppercase">Video opens in popup</p>
               </div>
-            )}
+            ) : null}
           </div>
 
           {/* Receipt overlay — sits on top of video, centered */}
