@@ -51,7 +51,8 @@ export default function SolinkDashboard() {
 
   // ── Camera state (카메라 상태) ──────────────────────────────────────────────
   const [cameras,        setCameras       ] = useState<SolinkCamera[]>([]);
-  const [selectedCamera, setSelectedCamera] = useState('');   // cameraId UUID
+  // Default to the known correct camera ID; overridden by dropdown selection (알려진 올바른 카메라 ID를 기본값으로 사용; 드롭다운 선택으로 재정의 가능)
+  const [selectedCamera, setSelectedCamera] = useState('3f34c890-17fb-11f1-a67a-af67afbf5812');
   const [videoUrl,       setVideoUrl      ] = useState<string | null>(null);
   const [videoLoading,   setVideoLoading  ] = useState(false);
 
