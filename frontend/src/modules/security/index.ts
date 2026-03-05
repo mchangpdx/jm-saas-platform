@@ -3,3 +3,4 @@
 
 export { PosOverlaySim }    from './components/PosOverlaySim';
 export { PreventTheftSim }  from './components/PreventTheftSim';
+export { default as SolinkDashboard } from './components/SolinkDashboard'; // Real video overlay dashboard (실제 비디오 오버레이 대시보드)

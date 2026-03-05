@@ -99,4 +99,36 @@ router.get('/video-link', async (req, res) => {
     }
 });
 
+// GET /api/solink/cameras
+// Returns a list of all cameras registered to this Solink account (Solink 계정에 등록된 카메라 목록 반환)
+router.get('/cameras', async (_req, res) => {
+    try {
+        const token = await getSolinkToken();
+        const response = await axios.get(
+            'https://api-prod-us-west-2.solinkcloud.com/v2/cameras',
+            {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'x-api-key': CONFIG.apiKey
+                },
+                timeout: 8_000
+            }
+        );
+        // Normalize to id + name + status fields (id, name, status 필드로 정규화)
+        const cameras = (Array.isArray(response.data) ? response.data : []).map(cam => ({
+            id:     cam.id     ?? cam.cameraId ?? '',
+            name:   cam.name   ?? cam.label   ?? 'Unnamed Camera',
+            status: cam.status ?? 'unknown'
+        }));
+        return res.json({ success: true, data: cameras });
+    } catch (error) {
+        console.error('[Solink Cameras Error] Failed to fetch camera list (카메라 목록 조회 실패):', error.response?.data || error.message);
+        return res.status(502).json({
+            success: false,
+            message: 'Failed to retrieve camera list from Solink',
+            error: error.response?.data || error.message
+        });
+    }
+});
+
 export default router;
