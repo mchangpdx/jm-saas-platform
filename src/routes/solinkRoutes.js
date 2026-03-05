@@ -53,17 +53,28 @@ router.get('/video-link', async (req, res) => {
     }
 
     try {
-        console.log(`[Solink API] Requesting video link for Camera: ${cameraId} at Time: ${timestamp}`);
-
         // 2. Convert ISO timestamp string to Unix Milliseconds to prevent the "1969 Epoch" error
-        const timestampMs = new Date(timestamp).getTime();
+        // (ISO 타임스탬프를 Unix 밀리초로 변환 — "1969년 에포크" 오류 방지)
+        const timestampMs  = new Date(timestamp).getTime();
+        const utcDateStr   = new Date(timestampMs).toUTCString();
 
         if (isNaN(timestampMs)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Invalid timestamp format. Must be a valid date string." 
+            return res.status(400).json({
+                success: false,
+                message: "Invalid timestamp format. Must be a valid date string."
             });
         }
+
+        // Debug log for timestamp alignment tracking (영수증-비디오 시간 불일치 추적용 디버그 로그)
+        console.log([
+            '┌─────────────────────────────────────────',
+            '│  [Solink] Timestamp Debug',
+            `│  cameraId    : ${cameraId}`,
+            `│  raw input   : ${timestamp}`,
+            `│  UTC string  : ${utcDateStr}`,
+            `│  timestampMs : ${timestampMs}`,
+            '└─────────────────────────────────────────',
+        ].join('\n'));
 
         // 3. Get Access Token
         const token = await getSolinkToken();
