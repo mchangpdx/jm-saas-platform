@@ -5,7 +5,7 @@
 
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search,
   RefreshCcw, AlertCircle, CheckCircle2, XCircle, Monitor,
@@ -54,6 +54,9 @@ export default function SolinkDashboard() {
   // Default to the known correct camera ID; overridden by dropdown selection (알려진 올바른 카메라 ID를 기본값으로 사용; 드롭다운 선택으로 재정의 가능)
   const [selectedCamera, setSelectedCamera] = useState('3f34c890-17fb-11f1-a67a-af67afbf5812');
   const [videoLoading, setVideoLoading] = useState(false); // True while fetching video URL for popup (팝업용 비디오 URL 조회 중 true)
+  // Persistent ref to the popup window — survives re-renders, avoids duplicate windows
+  // (팝업 창에 대한 영속적 ref — 리렌더 후에도 유지, 중복 창 방지)
+  const popupRef = useRef<Window | null>(null);
 
   // ── Filter state (필터 상태) ────────────────────────────────────────────────
   const [searchQuery,    setSearchQuery   ] = useState('');
@@ -144,13 +147,22 @@ export default function SolinkDashboard() {
       if (cancelled) return;
       setVideoLoading(false);
       if (!url) return;
-      // Open in a named popup — existing window is reused, no duplicate popups
-      // (고정된 이름의 팝업으로 열기 — 이미 열린 창은 재활용되어 중복 팝업 없음)
-      window.open(
-        url,
-        'SolinkVideoPlayer',
-        'width=1280,height=720,resizable=yes,scrollbars=no,toolbar=no,menubar=no,location=no,status=no',
-      );
+      // If the popup is already open, force-navigate via location.href so the Solink SPA
+      // receives a full page load rather than a target-name reuse (which the SPA ignores).
+      // (팝업이 이미 열려있으면 location.href로 강제 이동 — window.open target 재활용 시
+      //  Solink SPA가 URL 변경을 감지하지 못하는 버그를 이 방식으로 우회)
+      if (popupRef.current && !popupRef.current.closed) {
+        popupRef.current.location.href = url; // Force full navigation inside existing popup (기존 팝업 내 강제 전체 탐색)
+        popupRef.current.focus();             // Bring existing popup to front (기존 팝업을 전면으로 가져오기)
+      } else {
+        // No popup open yet — create a new sized popup and store the reference
+        // (아직 열린 팝업 없음 — 새 크기 지정 팝업 생성 후 참조 저장)
+        popupRef.current = window.open(
+          url,
+          'SolinkVideoPlayer',
+          'width=1280,height=720,resizable=yes,scrollbars=no,toolbar=no,menubar=no,location=no,status=no',
+        );
+      }
     });
     return () => { cancelled = true; };
   }, [selectedEvent, selectedCamera]);
