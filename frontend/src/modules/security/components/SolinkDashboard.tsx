@@ -53,7 +53,8 @@ export default function SolinkDashboard() {
   const [cameras,        setCameras       ] = useState<SolinkCamera[]>([]);
   // Default to the known correct camera ID; overridden by dropdown selection (알려진 올바른 카메라 ID를 기본값으로 사용; 드롭다운 선택으로 재정의 가능)
   const [selectedCamera, setSelectedCamera] = useState('3f34c890-17fb-11f1-a67a-af67afbf5812');
-  const [videoLoading, setVideoLoading] = useState(false); // True while fetching video URL for popup (팝업용 비디오 URL 조회 중 true)
+  const [videoLoading,   setVideoLoading  ] = useState(false);   // True while fetching video URL for popup
+  const [snapshotFailed, setSnapshotFailed] = useState(false);  // True when the snapshot <img> fires onError
   // Persistent ref to the popup window — survives re-renders, avoids duplicate windows
   // (팝업 창에 대한 영속적 ref — 리렌더 후에도 유지, 중복 창 방지)
   const popupRef = useRef<Window | null>(null);
@@ -137,6 +138,9 @@ export default function SolinkDashboard() {
   };
 
   useEffect(() => { loadData(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset snapshot error state whenever the selected event or camera changes so the real image is retried
+  useEffect(() => { setSnapshotFailed(false); }, [selectedEvent, selectedCamera]);
 
   // Fetch video URL on event/camera change and open in a named popup (이벤트/카메라 변경 시 비디오 URL 조회 후 고정 이름 팝업으로 열기)
   useEffect(() => {
@@ -401,19 +405,24 @@ export default function SolinkDashboard() {
 
                 {/* Snapshot thumbnail — camera still-frame at the exact transaction moment.
                     Fetched via the backend proxy so API credentials never reach the browser.
-                    Hidden automatically if the endpoint returns an error or no image. */}
-                <div className="w-full overflow-hidden bg-slate-900">
+                    Falls back to a styled placeholder when the endpoint returns no image. */}
+                {snapshotFailed ? (
+                  // Placeholder shown when Solink returns no snapshot for this timestamp
+                  <div className="w-full h-[160px] bg-slate-200 flex flex-col items-center justify-center gap-2 select-none">
+                    <Camera size={28} className="text-slate-400" />
+                    <span className="text-[11px] font-semibold tracking-widest text-slate-400 uppercase">
+                      No Snapshot Available
+                    </span>
+                  </div>
+                ) : (
                   <img
                     key={`${selectedCamera}-${selectedEvent.startTime}`}
                     src={`${BACKEND}/api/solink/snapshot?cameraId=${encodeURIComponent(selectedCamera)}&timestamp=${encodeURIComponent(selectedEvent.startTime)}`}
                     alt={`Camera snapshot — ${new Date(selectedEvent.startTime).toLocaleString()}`}
                     className="w-full h-[160px] object-cover block"
-                    onError={(e) => {
-                      // Hide the container gracefully if Solink returns no image
-                      (e.currentTarget.parentElement as HTMLElement).style.display = 'none';
-                    }}
+                    onError={() => setSnapshotFailed(true)}
                   />
-                </div>
+                )}
 
                 {/* Receipt top banner (영수증 상단 배너) */}
                 <div className="bg-[#e0e0e0] h-6 flex justify-end items-center px-2 text-slate-400">

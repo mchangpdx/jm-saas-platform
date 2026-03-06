@@ -173,17 +173,16 @@ router.get('/snapshot', async (req, res) => {
     try {
         const token = await getSolinkToken();
 
-        // Fetch snapshot as raw binary buffer so we can pipe it straight to the browser
+        // Fetch snapshot as raw binary buffer — cameraId is part of the URL path per official docs
         const response = await axios.get(
-            'https://api-prod-us-west-2.solinkcloud.com/v2/video/snapshot',
+            `https://api-prod-us-west-2.solinkcloud.com/v2/cameras/${cameraId}/snapshot`,
             {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'x-api-key':     CONFIG.apiKey,
                 },
                 params: {
-                    cameraId:  cameraId,
-                    timestamp: timestampSeconds,
+                    timestamp: timestampSeconds, // Unix seconds (10-digit); cameraId is in the path, not params
                 },
                 responseType: 'arraybuffer', // Binary image data, not JSON
                 timeout:      10_000,
