@@ -53,10 +53,11 @@ router.get('/video-link', async (req, res) => {
     }
 
     try {
-        // 2. Convert ISO timestamp string to Unix Milliseconds to prevent the "1969 Epoch" error
-        // (ISO 타임스탬프를 Unix 밀리초로 변환 — "1969년 에포크" 오류 방지)
-        const timestampMs  = new Date(timestamp).getTime();
-        const utcDateStr   = new Date(timestampMs).toUTCString();
+        // 2. Convert ISO timestamp → Unix milliseconds → Unix seconds (10-digit) required by Solink
+        // (ISO 타임스탬프 → Unix 밀리초 → Solink가 요구하는 Unix 초(10자리)로 변환)
+        const timestampMs      = new Date(timestamp).getTime();
+        const timestampSeconds = Math.floor(timestampMs / 1000); // Solink expects seconds, not ms (Solink는 밀리초가 아닌 초 단위 요구)
+        const utcDateStr       = new Date(timestampMs).toUTCString();
 
         if (isNaN(timestampMs)) {
             return res.status(400).json({
@@ -69,10 +70,11 @@ router.get('/video-link', async (req, res) => {
         console.log([
             '┌─────────────────────────────────────────',
             '│  [Solink] Timestamp Debug',
-            `│  cameraId    : ${cameraId}`,
-            `│  raw input   : ${timestamp}`,
-            `│  UTC string  : ${utcDateStr}`,
-            `│  timestampMs : ${timestampMs}`,
+            `│  cameraId         : ${cameraId}`,
+            `│  raw input        : ${timestamp}`,
+            `│  UTC string       : ${utcDateStr}`,
+            `│  timestampMs      : ${timestampMs}`,
+            `│  timestampSeconds : ${timestampSeconds}  ← sent to Solink`,
             '└─────────────────────────────────────────',
         ].join('\n'));
 
@@ -86,8 +88,8 @@ router.get('/video-link', async (req, res) => {
                 'x-api-key': CONFIG.apiKey
             },
             params: {
-                cameraId: cameraId,
-                timestamp: timestampMs // Sending numeric milliseconds
+                cameraId:  cameraId,
+                timestamp: timestampSeconds // Solink requires Unix seconds (10-digit), not milliseconds (Solink는 밀리초가 아닌 Unix 초(10자리) 요구)
             }
         });
 
