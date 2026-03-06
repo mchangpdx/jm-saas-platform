@@ -159,9 +159,8 @@ router.get('/snapshot', async (req, res) => {
         });
     }
 
-    // Convert ISO 8601 string to Unix seconds (10-digit) — same rule as /video-link
-    const timestampMs      = new Date(timestamp).getTime();
-    const timestampSeconds = Math.floor(timestampMs / 1000);
+    // Validate and convert to ISO-8601 string — the snapshot API requires this format, not Unix seconds
+    const timestampMs = new Date(timestamp).getTime();
 
     if (isNaN(timestampMs)) {
         return res.status(400).json({
@@ -170,10 +169,12 @@ router.get('/snapshot', async (req, res) => {
         });
     }
 
+    const timestampIso = new Date(timestampMs).toISOString(); // e.g. "2026-03-05T15:33:09.000Z"
+
     try {
         const token = await getSolinkToken();
 
-        // Fetch snapshot as raw binary buffer — cameraId is part of the URL path per official docs
+        // Fetch snapshot as raw binary buffer — cameraId is in the URL path, timestamp as ISO-8601 string
         const response = await axios.get(
             `https://api-prod-us-west-2.solinkcloud.com/v2/cameras/${cameraId}/snapshot`,
             {
@@ -182,7 +183,7 @@ router.get('/snapshot', async (req, res) => {
                     'x-api-key':     CONFIG.apiKey,
                 },
                 params: {
-                    timestamp: timestampSeconds, // Unix seconds (10-digit); cameraId is in the path, not params
+                    timestamp: timestampIso, // ISO-8601 string required by snapshot API (not Unix seconds)
                 },
                 responseType: 'arraybuffer', // Binary image data, not JSON
                 timeout:      10_000,
