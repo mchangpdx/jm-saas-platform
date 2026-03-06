@@ -399,6 +399,22 @@ export default function SolinkDashboard() {
             <div className="relative z-10 flex-1 flex items-center justify-center p-4 overflow-y-auto w-full">
               <div className="w-full max-w-[340px] bg-white shadow-[0_20px_60px_rgba(0,0,0,0.7)] border border-slate-200 animate-in fade-in zoom-in-95 duration-300 mx-auto mt-12 md:mt-0">
 
+                {/* Snapshot thumbnail — camera still-frame at the exact transaction moment.
+                    Fetched via the backend proxy so API credentials never reach the browser.
+                    Hidden automatically if the endpoint returns an error or no image. */}
+                <div className="w-full overflow-hidden bg-slate-900">
+                  <img
+                    key={`${selectedCamera}-${selectedEvent.startTime}`}
+                    src={`${BACKEND}/api/solink/snapshot?cameraId=${encodeURIComponent(selectedCamera)}&timestamp=${encodeURIComponent(selectedEvent.startTime)}`}
+                    alt={`Camera snapshot — ${new Date(selectedEvent.startTime).toLocaleString()}`}
+                    className="w-full h-[160px] object-cover block"
+                    onError={(e) => {
+                      // Hide the container gracefully if Solink returns no image
+                      (e.currentTarget.parentElement as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                </div>
+
                 {/* Receipt top banner (영수증 상단 배너) */}
                 <div className="bg-[#e0e0e0] h-6 flex justify-end items-center px-2 text-slate-400">
                   <Star size={14} className="fill-current" />

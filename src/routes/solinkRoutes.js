@@ -144,4 +144,69 @@ router.get('/cameras', async (_req, res) => {
     }
 });
 
+// GET /api/solink/snapshot?cameraId=<uuid>&timestamp=<ISO8601>
+// Proxies a still-frame snapshot image from Solink for the given camera and moment.
+// Returns the raw image binary with the correct Content-Type so the browser <img> tag
+// can display it directly without a separate fetch call from the frontend.
+router.get('/snapshot', async (req, res) => {
+    const { cameraId, timestamp } = req.query;
+
+    // Validate required parameters
+    if (!cameraId || !timestamp) {
+        return res.status(400).json({
+            success: false,
+            message: "Missing required query parameters: 'cameraId' and/or 'timestamp'",
+        });
+    }
+
+    // Convert ISO 8601 string to Unix seconds (10-digit) — same rule as /video-link
+    const timestampMs      = new Date(timestamp).getTime();
+    const timestampSeconds = Math.floor(timestampMs / 1000);
+
+    if (isNaN(timestampMs)) {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid timestamp format. Must be a valid ISO 8601 date string.",
+        });
+    }
+
+    try {
+        const token = await getSolinkToken();
+
+        // Fetch snapshot as raw binary buffer so we can pipe it straight to the browser
+        const response = await axios.get(
+            'https://api-prod-us-west-2.solinkcloud.com/v2/video/snapshot',
+            {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'x-api-key':     CONFIG.apiKey,
+                },
+                params: {
+                    cameraId:  cameraId,
+                    timestamp: timestampSeconds,
+                },
+                responseType: 'arraybuffer', // Binary image data, not JSON
+                timeout:      10_000,
+            },
+        );
+
+        // Forward the image Content-Type from Solink (typically image/jpeg)
+        const contentType = response.headers['content-type'] ?? 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
+
+        // Cache snapshot aggressively — the frame at a fixed timestamp never changes
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+
+        return res.send(Buffer.from(response.data));
+
+    } catch (error) {
+        console.error('[Solink Snapshot Error] Failed to fetch snapshot image:', error.response?.data || error.message);
+        return res.status(502).json({
+            success: false,
+            message: 'Failed to retrieve snapshot from Solink',
+            error:   error.response?.data || error.message,
+        });
+    }
+});
+
 export default router;
