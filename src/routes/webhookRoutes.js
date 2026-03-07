@@ -632,3 +632,198 @@ webhookRouter.post('/loyverse/customers', (req, res) => {
     );
   });
 });
+
+// ── POST /retell ──────────────────────────────────────────────────────────────
+
+/**
+ * Receive call_analyzed events from Retell AI and persist them to call_logs.
+ *
+ * Pipeline (파이프라인):
+ *   1. X-Ray log — print entire payload so every field Retell sends is visible.
+ *      (X-Ray 로그 — Retell이 전송하는 모든 필드 확인을 위해 전체 페이로드 출력)
+ *   2. Immediately return 200 OK before any async work — prevents Retell retries.
+ *      (비동기 작업 전 즉시 200 OK 반환 — Retell 재시도 방지)
+ *   3. In the background, filter non-target events, resolve store_id via the
+ *      agents table, and upsert the call record into call_logs on call_id.
+ *      (백그라운드에서 비대상 이벤트 필터링, agents 테이블로 store_id 확인,
+ *       call_id 기준으로 call_logs에 upsert)
+ *
+ * Idempotency: upsert on call_id — safe against Retell duplicate deliveries.
+ * (멱등성: call_id 기준 upsert — Retell 중복 전송에 안전)
+ */
+webhookRouter.post('/retell', (req, res) => {
+  // X-Ray log — print the full incoming payload before any processing.
+  // JSON.stringify with indentation makes multi-field payloads readable in server logs.
+  // (전체 수신 페이로드를 처리 전에 출력하는 X-Ray 로그.
+  //  들여쓰기로 JSON.stringify하여 서버 로그에서 다중 필드 페이로드 가독성 향상)
+  console.log('🔥 RETELL WEBHOOK PAYLOAD:', JSON.stringify(req.body, null, 2));
+
+  // Acknowledge immediately — Retell requires a fast 200 to avoid marking delivery as failed.
+  // All real work happens asynchronously below, detached from this HTTP response.
+  // (즉시 확인 — Retell이 전송 실패로 표시하지 않도록 빠른 200 필수.
+  //  실제 작업은 이 HTTP 응답에서 분리되어 비동기적으로 처리됨)
+  res.status(200).send('OK');
+
+  // Snapshot req.body before entering the async closure — req is no longer safe to read
+  // after the response has been sent and the event loop has moved on.
+  // (비동기 클로저 진입 전 req.body 스냅샷 — 응답 전송 후 req 참조는 안전하지 않음)
+  const body = req.body ?? {};
+
+  // Fire-and-forget — detached from the HTTP request lifecycle.
+  // (파이어 앤 포겟 — HTTP 요청 라이프사이클에서 분리)
+  (async () => {
+
+    // ── Step 1: Extract and validate the event type ───────────────────────
+
+    // Log the event type on every delivery — surfaces non-target events in server logs.
+    // (모든 전송에서 이벤트 타입 로그 — 서버 로그에서 비대상 이벤트 표시)
+    const event = body.event ?? null;
+    console.log(
+      `[RetellWebhook] Incoming event type (수신 이벤트 타입): ${event}`
+    );
+
+    // Skip every event other than call_analyzed — Retell sends many event types here.
+    // (call_analyzed 이외의 모든 이벤트 건너뜀 — Retell이 다양한 이벤트 타입 전송)
+    if (event !== 'call_analyzed') {
+      console.log(
+        `[RetellWebhook] Skipping event (이벤트 스킵): ${event}`
+      );
+      return;
+    }
+
+    // ── Step 2: Extract call fields from the payload ──────────────────────
+
+    // Retell wraps all call data under the "call" key (Retell은 모든 통화 데이터를 "call" 키 아래에 래핑)
+    const call = body.call ?? {};
+
+    const call_id         = call.call_id         ?? null;
+    const agent_id        = call.agent_id         ?? null;
+    const start_timestamp = call.start_timestamp  ?? null; // Unix ms from Retell (Retell의 Unix 밀리초)
+    const duration_ms     = call.duration_ms      ?? null;
+    const user_sentiment  = call.user_sentiment   ?? null;
+    const call_status     = call.call_status      ?? null;
+    const cost            = call.cost             ?? null;
+    const recording_url   = call.recording_url    ?? null;
+
+    // call_analysis sub-object holds the AI-generated summary and transcript.
+    // (call_analysis 하위 객체에 AI 생성 요약 및 트랜스크립트 포함)
+    const call_analysis      = call.call_analysis ?? {};
+    const summary            = call_analysis.call_summary      ?? null;
+    const transcript_object  = call_analysis.transcript_object ?? null; // Passed as JSONB — Supabase serialises automatically (JSONB로 전달 — Supabase가 자동 직렬화)
+
+    // Validate the minimum required fields before touching the database.
+    // (데이터베이스 접근 전 최소 필수 필드 검증)
+    if (!call_id || !agent_id) {
+      console.warn(
+        `[RetellWebhook] Missing call_id or agent_id — skipping insert ` +
+        `(call_id 또는 agent_id 누락 — 삽입 건너뜀) | call_id: ${call_id} | agent_id: ${agent_id}`
+      );
+      return;
+    }
+
+    // ── Step 3: Resolve store_id via the agents table ─────────────────────
+
+    // The agents table maps each Retell agent_id to our internal store_id.
+    // This is the same lookup used by the Next.js webhook receiver.
+    // (agents 테이블이 각 Retell agent_id를 내부 store_id에 매핑.
+    //  Next.js 웹훅 수신기와 동일한 조회 방식)
+    let store_id = null;
+
+    try {
+      const { data: agentRow, error: agentError } = await supabase
+        .from('agents')
+        .select('store_id')
+        .eq('agent_id', agent_id)
+        .maybeSingle();
+
+      if (agentError) {
+        // DB read error — log exact message and continue with null store_id.
+        // (DB 읽기 오류 — 정확한 메시지 로그 후 null store_id로 계속)
+        console.error(
+          `[RetellWebhook] agents table lookup failed (agents 테이블 조회 실패) | ` +
+          `agent_id: ${agent_id} | error: ${agentError.message}`
+        );
+      } else if (!agentRow) {
+        // agent_id not registered — common with Retell's Test button dummy data.
+        // Log a clear warning and proceed; the call log will be stored with null store_id.
+        // (agent_id 미등록 — Retell 테스트 버튼 더미 데이터에서 자주 발생.
+        //  명확한 경고 로그 후 진행 — 통화 로그는 null store_id로 저장됨)
+        console.log(`⚠️ No store found for agent: ${agent_id} — proceeding with null store_id (에이전트에 대한 매장 없음 — null store_id로 진행)`);
+      } else {
+        store_id = agentRow.store_id;
+      }
+    } catch (lookupErr) {
+      // Unexpected exception during lookup — log and continue with null store_id.
+      // (조회 중 예기치 않은 예외 — 로그 후 null store_id로 계속)
+      console.error(
+        `[RetellWebhook] Unexpected error during agent lookup (에이전트 조회 중 예기치 않은 오류) | ` +
+        `agent_id: ${agent_id} | ${lookupErr.message}`
+      );
+    }
+
+    // ── Step 4: Map fields and upsert into call_logs ──────────────────────
+
+    // Convert start_timestamp from Unix ms to ISO-8601 string for the timestamptz column.
+    // (Unix ms를 timestamptz 컬럼용 ISO-8601 문자열로 변환)
+    const start_timestamp_iso = start_timestamp
+      ? new Date(start_timestamp).toISOString()
+      : null;
+
+    // Build the row to upsert — mirrors the call_logs schema exactly.
+    // transcript_object is stored as JSONB; pass the raw object and Supabase handles serialisation.
+    // (upsert할 행 구성 — call_logs 스키마와 정확히 일치.
+    //  transcript_object는 JSONB로 저장 — 원시 객체를 전달하면 Supabase가 직렬화 처리)
+    const callLogRow = {
+      call_id,
+      agent_id,
+      store_id,
+      start_timestamp:   start_timestamp_iso,
+      duration_ms,
+      user_sentiment,
+      call_status,
+      cost,
+      recording_url,
+      summary,
+      transcript_object, // Stored as JSONB in Supabase — do NOT JSON.stringify before inserting (Supabase에 JSONB로 저장 — 삽입 전 JSON.stringify 금지)
+    };
+
+    try {
+      // Upsert on call_id to make this handler idempotent against Retell duplicate deliveries.
+      // (Retell 중복 전송에 대한 멱등성 보장을 위해 call_id 기준 upsert)
+      const { error: insertError } = await supabase
+        .from('call_logs')
+        .upsert(callLogRow, { onConflict: 'call_id' });
+
+      if (insertError) {
+        // Log the exact database insertion error for triage in server logs.
+        // (서버 로그에서 트리아지를 위해 정확한 데이터베이스 삽입 오류 로그)
+        console.error(
+          `[RetellWebhook] Failed to upsert call_log — exact error (통화 로그 upsert 실패 — 정확한 오류) | ` +
+          `call_id: ${call_id} | ${insertError.message}`
+        );
+      } else {
+        // Success log — confirms which call was stored and to which store.
+        // (성공 로그 — 저장된 통화와 해당 매장 확인)
+        console.log(
+          `[RetellWebhook] call_analyzed stored successfully (통화 분석 저장 완료) | ` +
+          `call_id: ${call_id} | store_id: ${store_id}`
+        );
+      }
+    } catch (insertErr) {
+      // Catch unexpected DB client exceptions — log the exact error message for triage.
+      // (예상치 못한 DB 클라이언트 예외 캐치 — 트리아지를 위해 정확한 오류 메시지 로그)
+      console.error(
+        `[RetellWebhook] DB upsert threw an exception (DB upsert 예외 발생) | ` +
+        `call_id: ${call_id} | ${insertErr.message}`
+      );
+    }
+
+  })().catch((err) => {
+    // Top-level catch for any unhandled promise rejection in the background handler.
+    // (백그라운드 핸들러의 미처리 프로미스 거부를 위한 최상위 캐치)
+    console.error(
+      `[RetellWebhook] Unhandled error in background handler (백그라운드 핸들러 미처리 오류) | ` +
+      `${err.message}`
+    );
+  });
+});
