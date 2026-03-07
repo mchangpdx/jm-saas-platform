@@ -602,9 +602,10 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Analytics</h2>
           <p className="text-sm text-gray-500 mt-0.5">
             {mode === 'agency'
-              ? (selectedStoreId
-                  ? 'Showing data for selected store — change the sidebar dropdown to switch or aggregate.'
-                  : 'Aggregated AI voice performance across all stores.')
+              // forceAggregation overrides the dropdown — always show the aggregated subtitle (forceAggregation은 드롭다운을 재정의 — 항상 집계 자막 표시)
+              ? ((!forceAggregation && selectedStoreId)
+                  ? 'Showing data for selected store — change the sidebar dropdown to switch or aggregate all.'
+                  : 'Aggregated across all stores.')
               : 'AI voice agent performance for this store.'}
           </p>
         </div>
