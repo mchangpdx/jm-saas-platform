@@ -286,12 +286,14 @@ export function AnalyticsDashboard({
     const total      = filteredLogs.length;
     const successful = filteredLogs.filter((l) => l.call_status === 'Successful').length;
     const totalSecs  = filteredLogs.reduce((acc, l) => acc + (l.duration ?? 0), 0);
-    const totalCost  = filteredLogs.reduce((acc, l) => acc + (l.cost ?? 0), 0);
+    const totalCostCents = filteredLogs.reduce((acc, l) => acc + (l.cost ?? 0), 0);
+    // Convert sum from cents to dollars before formatting — Supabase stores cost in cents (합계를 센트에서 달러로 변환 후 포맷 — Supabase는 비용을 센트 단위로 저장)
+    const totalCostDollars = totalCostCents / 100;
     return {
       totalCalls:  total,
       successRate: total > 0 ? ((successful / total) * 100).toFixed(1) : '0.0',
       timeSaved:   formatTotalDuration(totalSecs),
-      totalCost:   formatCost(totalCost),
+      totalCost:   formatCost(totalCostDollars),
     };
   }, [filteredLogs]);
 
