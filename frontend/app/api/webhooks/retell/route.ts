@@ -57,14 +57,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let payload: RetellPayload;
   try {
     payload = await request.json();
+
+    // Log the full incoming payload for X-Ray debugging — surfaces every field Retell sends.
+    // (X-Ray 디버깅을 위해 전체 수신 페이로드를 로그에 출력 — Retell이 전송하는 모든 필드 표시)
+    console.log('🔥 RETELL WEBHOOK PAYLOAD:', JSON.stringify(payload, null, 2));
   } catch {
     console.warn('[retell-webhook] Failed to parse JSON body — ignoring (JSON 바디 파싱 실패 — 무시)');
     return NextResponse.json({ received: true, processed: false, reason: 'invalid json' }, { status: 200 });
   }
 
+  // Log the event type on every request — makes non-target traffic visible in server logs.
+  // (모든 요청에서 이벤트 타입 로그 — 서버 로그에서 비대상 트래픽 표시)
+  console.log('[retell-webhook] Incoming event type (수신 이벤트 타입):', payload.event);
+
   // Ignore events other than call_analyzed — Retell sends all event types to this endpoint.
   // (call_analyzed 이외의 이벤트는 무시 — Retell이 모든 이벤트 타입을 이 엔드포인트로 전송)
   if (payload.event !== 'call_analyzed') {
+    // Log the skipped event type so non-target traffic is traceable in the dashboard logs.
+    // (스킵된 이벤트 타입을 로그에 기록하여 비대상 트래픽을 대시보드 로그에서 추적 가능)
+    console.log('[retell-webhook] Skipping event (이벤트 스킵):', payload.event);
     return NextResponse.json({ received: true, processed: false }, { status: 200 });
   }
 
@@ -95,14 +106,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ received: true, processed: false, reason: 'agent lookup error' }, { status: 200 });
     }
 
-    // agent_id not registered in our system — log and return 200 to stop Retell from retrying.
-    // (시스템에 등록되지 않은 agent_id — 로그 남기고 200 반환으로 Retell 재시도 중단)
+    // Gracefully handle unregistered agent_id — common when using Retell's Test button with dummy data.
+    // Log a clear warning and continue with null store_id rather than dropping the event entirely.
+    // (미등록 agent_id 처리 — Retell 테스트 버튼의 더미 데이터에서 자주 발생.
+    //  이벤트를 완전히 버리지 않고 null store_id로 계속 진행하며 경고를 명확히 로그에 출력)
     if (!agentRow) {
-      console.warn(`[retell-webhook] Unknown agent_id: ${call.agent_id} (등록되지 않은 에이전트 ID)`);
-      return NextResponse.json({ received: true, processed: false, reason: 'unknown agent' }, { status: 200 });
+      console.log(`⚠️ No store found for agent: ${call.agent_id} — proceeding with null store_id (에이전트에 대한 매장 없음 — null store_id로 진행)`);
     }
 
-    const storeId = agentRow.store_id;
+    // Resolve store_id — null when agent is unregistered (e.g. Retell test payload).
+    // (store_id 확정 — 에이전트 미등록 시 null, 예: Retell 테스트 페이로드)
+    const storeId: string | null = agentRow?.store_id ?? null;
 
     // Map Retell payload fields to call_logs table columns.
     // start_timestamp is Unix ms from Retell — convert to ISO-8601 string for timestamptz.
@@ -123,14 +137,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     };
 
     // Upsert on call_id to make this handler idempotent against Retell retries.
-    // (Retell 재시도에 대한 멱등성 보장을 위해 call_id 기준 upsert)
-    const { error: insertError } = await supabase
-      .from('call_logs')
-      .upsert(callLogRow, { onConflict: 'call_id' });
+    // An inner try/catch isolates DB errors from the outer runtime catch for precise diagnostics.
+    // (Retell 재시도에 대한 멱등성 보장을 위해 call_id 기준 upsert.
+    //  내부 try/catch로 DB 오류를 외부 런타임 캐치와 분리하여 정확한 진단 가능)
+    let insertError: { message: string } | null = null;
+    try {
+      const { error } = await supabase
+        .from('call_logs')
+        .upsert(callLogRow, { onConflict: 'call_id' });
+      insertError = error;
+    } catch (dbErr) {
+      // Catch unexpected DB client exceptions and log the exact error message for triage.
+      // (예상치 못한 DB 클라이언트 예외를 캐치하고 트리아지를 위해 정확한 오류 메시지 로그)
+      const dbMessage = dbErr instanceof Error ? dbErr.message : String(dbErr);
+      console.error('[retell-webhook] DB upsert threw an exception (DB upsert 예외 발생):', dbMessage);
+      return NextResponse.json({ received: true, processed: false, reason: 'db exception' }, { status: 200 });
+    }
 
     if (insertError) {
-      console.error('[retell-webhook] Failed to upsert call_log (통화 로그 upsert 실패):', insertError.message);
-      return NextResponse.json({ error: 'Database write failed' }, { status: 500 });
+      // Log the exact database insertion failure for triage — return 200 to suppress Retell retries.
+      // (트리아지를 위해 정확한 데이터베이스 삽입 실패 로그 — Retell 재시도 억제를 위해 200 반환)
+      console.error('[retell-webhook] Failed to upsert call_log — exact error (통화 로그 upsert 실패 — 정확한 오류):', insertError.message);
+      return NextResponse.json({ received: true, processed: false, reason: 'db error' }, { status: 200 });
     }
 
     console.log(`[retell-webhook] call_analyzed stored — call_id: ${call.call_id}, store_id: ${storeId} (통화 분석 저장 완료)`);
