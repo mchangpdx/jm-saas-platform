@@ -89,8 +89,8 @@ const C_INDIGO   = '#6366f1';
 const C_ROSE     = '#f43f5e';
 const C_AMBER    = '#f59e0b';
 const C_BLUE     = '#3b82f6';
-const C_AXIS     = '#94a3b8'; // slate-400 — legible on dark charts (다크 차트에서 가독성 있는 색상)
-const C_GRID     = 'rgba(148,163,184,0.08)'; // near-invisible guide lines (거의 보이지 않는 가이드 선)
+const C_AXIS     = '#9ca3af'; // gray-400 — legible on white chart backgrounds (흰색 차트 배경에서 가독성 있는 색상)
+const C_GRID     = 'rgba(156,163,175,0.25)'; // light gray guide lines visible on white (흰색 배경에서 보이는 연한 회색 가이드 선)
 
 const SENTIMENT_COLORS: Record<string, string> = {
   Positive: C_EMERALD,
@@ -101,8 +101,8 @@ const STATUS_COLORS = [C_EMERALD, C_ROSE];
 const DAY_LABELS    = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const HOUR_LABELS   = ['9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm','9pm','10pm'];
 
-// Glassmorphism card base class reused on every panel — shadow-xl adds depth, rounded-xl tightens corners (모든 패널에서 재사용하는 글래스모피즘 카드 기본 클래스 — shadow-xl로 깊이 추가, rounded-xl로 모서리 정돈)
-const GLASS = 'bg-slate-900/60 backdrop-blur-md border border-slate-800/50 shadow-xl rounded-xl';
+// Light theme card base class reused on every panel — white bg, subtle gray border, soft shadow (모든 패널에서 재사용하는 라이트 테마 카드 기본 클래스 — 흰색 배경, 연한 회색 테두리, 부드러운 그림자)
+const GLASS = 'bg-white border border-gray-200 shadow-sm rounded-xl';
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
@@ -116,12 +116,12 @@ function fmtMmSs(seconds: number | null): string {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-// Dark glassmorphism tooltip for all Recharts charts (모든 Recharts 차트용 다크 글래스모피즘 툴팁)
+// Light theme tooltip for all Recharts charts — white card with gray border (모든 Recharts 차트용 라이트 테마 툴팁 — 회색 테두리의 흰색 카드)
 function DarkTip({ active, payload, label }: TipProps) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-xl bg-slate-800/95 border border-slate-700/60 px-3.5 py-2.5 shadow-2xl text-xs backdrop-blur-sm">
-      {label && <p className="text-slate-400 mb-1.5 font-medium">{label}</p>}
+    <div className="rounded-xl bg-white border border-gray-200 px-3.5 py-2.5 shadow-lg text-xs">
+      {label && <p className="text-gray-500 mb-1.5 font-medium">{label}</p>}
       {payload.map((e: TipEntry, i: number) => (
         <p key={i} className="font-semibold leading-5" style={{ color: e.color ?? C_EMERALD }}>
           {e.name}: {e.value}
@@ -135,15 +135,15 @@ function DarkTip({ active, payload, label }: TipProps) {
 function ChartEmpty({ height = 'h-52' }: { height?: string }) {
   return (
     <div className={`flex flex-col items-center justify-center ${height} gap-2`}>
-      <BarChart3 className="h-8 w-8 text-slate-700" />
-      <p className="text-xs text-slate-600">No data for this period</p>
+      <BarChart3 className="h-8 w-8 text-gray-300" />
+      <p className="text-xs text-gray-400">No data for this period</p>
     </div>
   );
 }
 
-// Pulse skeleton block displayed while data is loading (데이터 로딩 중 표시되는 펄스 스켈레톤 블록)
+// Pulse skeleton block displayed while data is loading — gray-100 matches light page background (데이터 로딩 중 표시되는 펄스 스켈레톤 블록 — gray-100이 라이트 페이지 배경과 어울림)
 function Skel({ className }: { className?: string }) {
-  return <div className={`animate-pulse rounded-2xl bg-slate-800/50 ${className ?? ''}`} />;
+  return <div className={`animate-pulse rounded-xl bg-gray-100 ${className ?? ''}`} />;
 }
 
 // KPI summary card with glassmorphism styling (글래스모피즘 스타일의 KPI 요약 카드)
@@ -164,10 +164,11 @@ function KpiCard({
         <Icon className={`h-5 w-5 ${accentColor}`} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-[11px] text-slate-400 mb-1.5 font-medium uppercase tracking-widest">{label}</p>
-        {/* KPI value — text-3xl for prominent readability on dark glass cards (다크 글래스 카드에서 눈에 띄는 가독성을 위한 text-3xl 크기) */}
-        <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
-        {sub && <p className="text-xs text-slate-500">{sub}</p>}
+        {/* KPI label — text-gray-500 keeps hierarchy below the bold value (굵은 값 아래의 계층을 유지하는 text-gray-500) */}
+        <p className="text-[11px] text-gray-500 mb-1.5 font-medium uppercase tracking-widest">{label}</p>
+        {/* KPI value — text-gray-900 on white background for maximum contrast (최대 대비를 위한 흰색 배경의 text-gray-900) */}
+        <p className="text-3xl font-bold text-gray-900 leading-none mb-1">{value}</p>
+        {sub && <p className="text-xs text-gray-400">{sub}</p>}
       </div>
     </div>
   );
@@ -181,8 +182,8 @@ function Panel({ title, children, className }: {
 }) {
   return (
     <div className={`${GLASS} p-6 ${className ?? ''}`}>
-      {/* Panel title — font-medium keeps it lighter than the KPI values for clear hierarchy (KPI 값보다 가볍게 유지하여 명확한 계층 구조를 위한 font-medium) */}
-      <p className="text-sm font-medium text-slate-400 mb-5 uppercase tracking-wider">{title}</p>
+      {/* Panel title — text-gray-500 on white for readable but subdued section label (읽기 쉽지만 차분한 섹션 레이블을 위한 흰색 배경의 text-gray-500) */}
+      <p className="text-sm font-medium text-gray-500 mb-5 uppercase tracking-wider">{title}</p>
       {children}
     </div>
   );
@@ -540,11 +541,12 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   if (!loading && noStores) {
     return (
       <div className="flex flex-col items-center justify-center min-h-64 py-24 text-center">
-        <div className="h-16 w-16 rounded-2xl bg-slate-800/60 flex items-center justify-center mb-5">
-          <Store className="h-8 w-8 text-slate-600" />
+        {/* Empty state icon badge — gray-100 bg matches light page (라이트 페이지와 어울리는 gray-100 배경 아이콘 배지) */}
+      <div className="h-16 w-16 rounded-2xl bg-gray-100 flex items-center justify-center mb-5">
+          <Store className="h-8 w-8 text-gray-400" />
         </div>
-        <p className="text-base font-semibold text-slate-400">No stores linked to this agency yet.</p>
-        <p className="mt-1 text-sm text-slate-600">Add a store with this agency's ID to start seeing data.</p>
+        <p className="text-base font-semibold text-gray-600">No stores linked to this agency yet.</p>
+        <p className="mt-1 text-sm text-gray-400">Add a store with this agency's ID to start seeing data.</p>
       </div>
     );
   }
@@ -556,8 +558,9 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
       {/* ── Control bar: heading + period picker + export (제목 + 기간 선택기 + 내보내기) */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white tracking-tight">Analytics</h2>
-          <p className="text-sm text-slate-500 mt-0.5">
+          {/* Page heading — text-gray-900 for strong presence on white background (흰색 배경에서 강한 존재감을 위한 text-gray-900) */}
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Analytics</h2>
+          <p className="text-sm text-gray-500 mt-0.5">
             {mode === 'agency'
               ? 'Aggregated AI voice performance across all stores.'
               : 'AI voice agent performance for this store.'}
@@ -565,8 +568,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Period selector — each click triggers a full server-side re-fetch with the new rolling window (각 클릭이 새로운 롤링 창으로 전체 서버 사이드 재조회를 트리거) */}
-          <div className="flex rounded-xl border border-slate-700/50 overflow-hidden backdrop-blur-md">
+          {/* Period selector — light theme segmented control with gray border (회색 테두리의 라이트 테마 세그먼트 컨트롤) */}
+          <div className="flex rounded-xl border border-gray-200 overflow-hidden">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
@@ -574,8 +577,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                 className={[
                   'px-3.5 py-1.5 text-xs font-semibold transition-all',
                   dateRange === p.value
-                    ? 'bg-emerald-600 text-white shadow-inner'
-                    : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200',
+                    ? 'bg-indigo-600 text-white shadow-inner'
+                    : 'bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-700',
                 ].join(' ')}
               >
                 {p.label}
@@ -583,11 +586,11 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
             ))}
           </div>
 
-          {/* CSV export — disabled when no data available (데이터 없을 때 비활성화되는 CSV 내보내기) */}
+          {/* CSV export — light theme button with gray border and hover (회색 테두리와 호버 효과가 있는 라이트 테마 버튼) */}
           <button
             onClick={downloadCSV}
             disabled={loading || logs.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Download className="h-3.5 w-3.5" />
             CSV
@@ -597,7 +600,7 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           <button
             onClick={() => window.print()}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FileText className="h-3.5 w-3.5" />
             PDF
@@ -607,7 +610,7 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           <button
             onClick={fetchData}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -617,7 +620,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
 
       {/* ── Error banner (오류 배너) */}
       {error && (
-        <div className="flex items-center gap-2.5 rounded-xl border border-red-800/60 bg-red-900/20 px-4 py-3 text-sm text-red-400">
+        {/* Error banner — light red tones consistent with light theme (라이트 테마와 일관된 연한 빨간색 톤) */}
+        <div className="flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           {error}
         </div>
@@ -733,7 +737,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                       const pct   = total > 0 ? ((Number(e.value) / total) * 100).toFixed(1) : '0';
                       const fill  = (e.payload as { fill?: string } | undefined)?.fill ?? C_EMERALD;
                       return (
-                        <div className="rounded-xl bg-slate-800/95 border border-slate-700/60 px-3.5 py-2.5 shadow-2xl text-xs">
+                        // Donut tooltip — white card matching light theme (라이트 테마와 일치하는 흰색 카드 도넛 툴팁)
+                        <div className="rounded-xl bg-white border border-gray-200 px-3.5 py-2.5 shadow-lg text-xs">
                           <p className="font-semibold" style={{ color: fill }}>
                             {e.name}: {e.value} ({pct}%)
                           </p>
@@ -780,40 +785,44 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           <Panel title="Needs Attention">
             {flagged.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-44 gap-3">
-                <div className="h-12 w-12 rounded-2xl bg-emerald-900/30 flex items-center justify-center">
-                  <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+                {/* Positive empty state — light emerald badge consistent with light theme (라이트 테마와 일관된 연한 에메랄드 배지) */}
+                <div className="h-12 w-12 rounded-2xl bg-emerald-50 flex items-center justify-center">
+                  <CheckCircle2 className="h-6 w-6 text-emerald-500" />
                 </div>
-                <p className="text-xs text-slate-500 text-center">No flagged calls this period — great work!</p>
+                <p className="text-xs text-gray-400 text-center">No flagged calls this period — great work!</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800/60">
-                      {/* Table headers — text-slate-400 matches card title brightness for unified tone (카드 제목 밝기와 일치하는 통일된 톤을 위한 text-slate-400) */}
+                    {/* Table header row — border-gray-100 for a soft light divider (부드러운 라이트 구분선을 위한 border-gray-100) */}
+                    <tr className="border-b border-gray-100">
+                      {/* Table headers — text-gray-500 matches panel titles for consistent light hierarchy (일관된 라이트 계층 구조를 위한 패널 제목과 동일한 text-gray-500) */}
                       {['Date', 'Phone', 'Status', 'Sentiment', 'Dur.', ''].map((h) => (
-                        <th key={h} className="text-left pb-3 font-medium text-slate-400">{h}</th>
+                        <th key={h} className="text-left pb-3 font-medium text-gray-500">{h}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/40">
+                  {/* Table body — light gray dividers between rows (행 사이의 연한 회색 구분선) */}
+                  <tbody className="divide-y divide-gray-100">
                     {flagged.map((log, i) => (
                       // Row click navigates to Call History filtered by call_id (행 클릭으로 call_id로 필터링된 통화 기록으로 이동)
                       <tr
                         key={i}
                         onClick={() => router.push(`/${mode}/call-history?call_id=${log.call_id}`)}
-                        className="hover:bg-slate-800/30 cursor-pointer transition-colors"
+                        className="hover:bg-gray-50 cursor-pointer transition-colors"
                       >
-                        <td className="py-3 text-slate-400">
+                        <td className="py-3 text-gray-500">
                           {new Date(log.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                         </td>
-                        <td className="py-3 text-slate-300 font-mono">{log.customer_phone ?? '—'}</td>
+                        <td className="py-3 text-gray-700 font-mono">{log.customer_phone ?? '—'}</td>
                         <td className="py-3">
+                          {/* Status badge — light bg with colored text for light theme readability (라이트 테마 가독성을 위한 연한 배경과 색상 텍스트 상태 배지) */}
                           <span className={[
                             'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset',
                             log.call_status === 'Successful'
-                              ? 'bg-emerald-900/40 text-emerald-400 ring-emerald-700/50'
-                              : 'bg-rose-900/40   text-rose-400   ring-rose-700/50',
+                              ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                              : 'bg-rose-50    text-rose-700   ring-rose-200',
                           ].join(' ')}>
                             {log.call_status}
                           </span>
@@ -823,13 +832,13 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                             {log.sentiment ?? '—'}
                           </span>
                         </td>
-                        <td className="py-3 text-slate-400 font-mono">{fmtMmSs(log.duration)}</td>
-                        <td className="py-3 text-slate-600"><ChevronRight className="h-3.5 w-3.5" /></td>
+                        <td className="py-3 text-gray-500 font-mono">{fmtMmSs(log.duration)}</td>
+                        <td className="py-3 text-gray-300"><ChevronRight className="h-3.5 w-3.5" /></td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <p className="mt-3 text-[10px] text-slate-600 italic">
+                <p className="mt-3 text-[10px] text-gray-400 italic">
                   5 most recent Negative or Unsuccessful calls. Click a row to view full details.
                 </p>
               </div>
@@ -845,16 +854,17 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           {logs.length === 0 ? <ChartEmpty height="h-36" /> : (
             <div className="overflow-x-auto">
               <div className="min-w-[600px]">
-                {/* Hour header (시간 헤더) */}
+                {/* Hour header — gray-400 labels visible against white background (흰색 배경에서 보이는 gray-400 레이블) */}
                 <div className="flex gap-1 mb-1.5 pl-11">
                   {HOUR_LABELS.map((h) => (
-                    <div key={h} className="flex-1 text-center text-[9px] text-slate-600 font-medium">{h}</div>
+                    <div key={h} className="flex-1 text-center text-[9px] text-gray-400 font-medium">{h}</div>
                   ))}
                 </div>
                 {/* Day rows Mon–Sun (월–일 요일 행) */}
                 {DAY_LABELS.map((day, di) => (
                   <div key={day} className="flex items-center gap-1 mb-1">
-                    <div className="w-10 shrink-0 text-[10px] text-slate-500 font-semibold text-right pr-2">{day}</div>
+                    {/* Day label — text-gray-500 for soft contrast on light background (라이트 배경의 부드러운 대비를 위한 text-gray-500) */}
+                    <div className="w-10 shrink-0 text-[10px] text-gray-500 font-semibold text-right pr-2">{day}</div>
                     {HOUR_LABELS.map((_, hi) => {
                       const count = heatmap[di][hi];
                       // Intensity scale 0.10→0.95 proportional to busiest cell (가장 바쁜 셀에 비례한 강도 스케일 0.10→0.95)
@@ -866,19 +876,19 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                           className="flex-1 h-7 rounded-md transition-colors"
                           style={{
                             backgroundColor: count > 0
-                              ? `rgba(16,185,129,${alpha})`        // emerald with variable opacity (가변 투명도 에메랄드)
-                              : 'rgba(15,23,42,0.6)',               // near-black for zero cells (0 셀은 거의 검정)
+                              ? `rgba(16,185,129,${alpha})`  // emerald with variable opacity (가변 투명도 에메랄드)
+                              : 'rgb(243,244,246)',           // gray-100 for zero cells on light background (라이트 배경의 0 셀에 gray-100)
                           }}
                         />
                       );
                     })}
                   </div>
                 ))}
-                {/* Legend bar (범례 막대) */}
+                {/* Legend bar — gray-400 labels match hour/day label tone (시간/요일 레이블 톤과 일치하는 gray-400 레이블) */}
                 <div className="flex items-center gap-2.5 mt-3 pl-11">
-                  <span className="text-[9px] text-slate-600 font-medium">Low</span>
+                  <span className="text-[9px] text-gray-400 font-medium">Low</span>
                   <div className="flex-1 h-1.5 rounded-full" style={{ background: 'linear-gradient(to right,rgba(16,185,129,0.10),rgba(16,185,129,0.95))' }} />
-                  <span className="text-[9px] text-slate-600 font-medium">High</span>
+                  <span className="text-[9px] text-gray-400 font-medium">High</span>
                 </div>
               </div>
             </div>
