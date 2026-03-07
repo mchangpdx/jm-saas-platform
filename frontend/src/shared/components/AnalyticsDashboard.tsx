@@ -257,6 +257,16 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     // Upper bound is always "now" — prevents any future-dated rows from leaking in (상한은 항상 "현재" — 미래 날짜 행이 포함되는 것을 방지)
     const endIso   = new Date().toISOString();
 
+    // [X-Ray] Log the exact ISO strings being sent to Supabase so we can verify the filter is applied (Supabase로 전송되는 정확한 ISO 문자열을 로그에 출력하여 필터 적용 여부 확인)
+    console.log('[X-Ray] Date filter applied:', {
+      mode,
+      storeIds,
+      range:       dateRange,
+      start:       startIso ?? '(none — All time)',
+      end:         endIso,
+      filterActive: startIso !== null,
+    });
+
     // Build the call_logs query — apply start_time bounds when a date range is active (날짜 범위가 활성화된 경우 start_time 경계를 적용하는 call_logs 쿼리 구성)
     let logsQ = supabase
       .from('call_logs')
@@ -288,6 +298,31 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     // Execute both queries in parallel to minimise total round-trip time (총 왕복 시간 최소화를 위해 두 쿼리를 병렬 실행)
     const [logsRes, ordersRes] = await Promise.all([logsQ, ordersQ]);
 
+    // [X-Ray] Log the exact row counts returned by Supabase so we can confirm the filter is working (필터 적용 여부를 확인하기 위해 Supabase가 반환한 정확한 행 수를 로그에 출력)
+    console.log('[X-Ray] Raw call_logs fetched:', logsRes.data?.length ?? 0, 'records');
+    console.log('[X-Ray] Raw orders fetched (paid only):', ordersRes.data?.length ?? 0, 'records');
+
+    // [X-Ray] Log Supabase errors so we can catch silent query failures (자동으로 실패하는 쿼리를 잡기 위해 Supabase 오류를 로그에 출력)
+    if (logsRes.error) {
+      console.error('[X-Ray] call_logs query error:', logsRes.error.message, logsRes.error);
+    }
+    if (ordersRes.error) {
+      console.error('[X-Ray] orders query error:', ordersRes.error.message, ordersRes.error);
+    }
+
+    // [X-Ray] Log the first 3 call_log rows so we can verify start_time values against the filter (필터 대비 start_time 값을 확인하기 위해 call_log의 첫 3행을 로그에 출력)
+    console.log('[X-Ray] call_logs sample (first 3):', (logsRes.data ?? []).slice(0, 3).map((r) => ({
+      call_id:    (r as { call_id?: string }).call_id,
+      start_time: (r as { start_time?: string }).start_time,
+      status:     (r as { call_status?: string }).call_status,
+    })));
+
+    // [X-Ray] Log the first 3 order rows so we can verify created_at and total_amount values (created_at과 total_amount 값을 확인하기 위해 order의 첫 3행을 로그에 출력)
+    console.log('[X-Ray] orders sample (first 3):', (ordersRes.data ?? []).slice(0, 3).map((r) => ({
+      created_at:   (r as { created_at?: string }).created_at,
+      total_amount: (r as { total_amount?: number }).total_amount,
+    })));
+
     setLogs((logsRes.data     as CallLog[] | null) ?? []);
     setOrders((ordersRes.data as Order[]   | null) ?? []);
 
@@ -308,8 +343,50 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   // (logs/orders는 이미 서버 필터링되어 있으므로 이 메모는 순수 집계 —
   //  단일 진실 소스는 메모가 아닌 조회)
 
-  // All 5 KPIs via the shared calcKpis utility (공유 calcKpis 유틸리티를 통한 5개 KPI 모두)
-  const kpis = useMemo(() => calcKpis(logs, orders), [logs, orders]);
+  // All 5 KPIs via the shared calcKpis utility — logs the exact math before returning so
+  // we can confirm the numbers match what the UI displays (공유 calcKpis 유틸리티를 통한 5개 KPI 모두
+  // — UI에 표시되는 숫자와 일치하는지 확인하기 위해 반환 전 정확한 수식을 로그에 출력)
+  const kpis = useMemo(() => {
+    // [X-Ray] Log the input array lengths so we can verify the correct dataset reaches KPI math (올바른 데이터셋이 KPI 수식에 도달하는지 확인하기 위해 입력 배열 길이를 로그에 출력)
+    console.log('[X-Ray] KPI Math input arrays:', {
+      dateRange,
+      logsCount:   logs.length,
+      ordersCount: orders.length,
+    });
+
+    // [X-Ray] Log Total Calls — must equal the call_logs row count above (위의 call_logs 행 수와 일치해야 하는 Total Calls를 로그에 출력)
+    console.log('[X-Ray] KPI Math -> Total Calls:', logs.length);
+
+    // [X-Ray] Log success rate numerator and denominator to catch miscounts (잘못된 집계를 잡기 위해 성공률의 분자와 분모를 로그에 출력)
+    const successfulCount = logs.filter((l) => l.call_status === 'Successful').length;
+    console.log('[X-Ray] KPI Math -> Successful calls:', successfulCount, '/', logs.length);
+
+    // [X-Ray] Log raw duration sum in seconds before dividing by 60 (60으로 나누기 전 초 단위의 원시 duration 합계를 로그에 출력)
+    const rawDurationSecs = logs.reduce((acc, l) => acc + (l.duration ?? 0), 0);
+    console.log('[X-Ray] KPI Math -> Raw duration sum (seconds):', rawDurationSecs, '→', Math.round(rawDurationSecs / 60), 'min');
+
+    // [X-Ray] Log raw cost sum in cents before dividing by 100 (100으로 나누기 전 센트 단위의 원시 cost 합계를 로그에 출력)
+    const rawCostCents = logs.reduce((acc, l) => acc + (l.cost ?? 0), 0);
+    console.log('[X-Ray] KPI Math -> Raw cost sum (cents):', rawCostCents, '→ $', (rawCostCents / 100).toFixed(2));
+
+    // [X-Ray] Log total revenue sum — total_amount is already USD, no division (total_amount는 이미 USD 단위로 나눗셈 없음 — 총 매출 합계를 로그에 출력)
+    const sumOfRevenue = orders.reduce((acc, o) => acc + (o.total_amount ?? 0), 0);
+    console.log('[X-Ray] KPI Math -> Total Revenue (paid orders only):', sumOfRevenue.toFixed(2));
+
+    // Delegate the actual calculation to the shared utility as the single source of truth (단일 진실 소스인 공유 유틸리티에 실제 계산 위임)
+    const result = calcKpis(logs, orders);
+
+    // [X-Ray] Log the final formatted KPI values that will appear in the UI (UI에 표시될 최종 포맷된 KPI 값을 로그에 출력)
+    console.log('[X-Ray] KPI Final values:', {
+      totalCalls:  result.totalCalls,
+      successRate: result.successRate + '%',
+      timeHandled: result.timeHandled,
+      totalCost:   result.totalCost,
+      aiRevenue:   result.aiRevenue,
+    });
+
+    return result;
+  }, [logs, orders, dateRange]);
 
   // Daily series merging call counts (start_time) and paid revenue (created_at) for the ComposedChart (ComposedChart용 통화 건수와 결제 매출을 병합한 일별 계열)
   const composedData = useMemo(() => {
