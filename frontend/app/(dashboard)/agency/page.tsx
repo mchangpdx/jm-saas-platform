@@ -36,23 +36,14 @@ export default function AgencyOverviewPage() {
         </p>
       </div>
 
-      {/* Full analytics dashboard in agency mode — aggregates all stores when no store is selected,
-          or scopes to the selected store when the sidebar dropdown is active.
-          agentId is always a non-empty string here because StoreContext is synchronously provided.
-          (에이전시 모드 전체 분석 대시보드 — 매장 미선택 시 전체 집계,
-           사이드바 드롭다운 활성 시 선택 매장만 표시. StoreContext 동기 제공으로 agentId는 항상 비어있지 않음) */}
-      {agentId ? (
-        <AnalyticsDashboard mode="agency" id={agentId} />
-      ) : (
-        // Fallback for the rare case where agentId is an empty string (agency account not fully configured).
-        // This is a configuration error, not a loading state — AnalyticsDashboard would query nothing useful.
-        // (agentId가 빈 문자열인 드문 경우의 폴백 — 에이전시 계정 미설정 오류, 로딩 상태 아님)
-        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-          <p className="text-sm text-gray-500">
-            No agency account linked. Please contact support to configure your agency profile.
-          </p>
-        </div>
-      )}
+      {/* Full analytics dashboard in agency mode — always rendered, no conditional gate.
+          AnalyticsDashboard handles its own empty/error states internally so there is no need
+          to guard on agentId here. A gate on agentId caused the error block to show because
+          StoreContext defaults agentId to '' (empty string, falsy) before the provider mounts.
+          (에이전시 모드 전체 분석 대시보드 — 항상 렌더링, 조건부 게이트 없음.
+           AnalyticsDashboard가 내부적으로 빈/오류 상태를 처리하므로 여기서 agentId 게이트 불필요.
+           agentId 게이트가 오류 블록을 표시한 원인: StoreContext 기본값 agentId='' 이 falsy이기 때문) */}
+      <AnalyticsDashboard mode="agency" id={agentId} />
 
       {/* Module shortcuts — quick navigation to key agency modules (주요 에이전시 모듈로의 빠른 내비게이션) */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
