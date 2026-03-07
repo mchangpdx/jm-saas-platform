@@ -198,41 +198,53 @@ function CallCard({
   );
 }
 
-// Chat bubble transcript renderer — agent left, user right.
-// (채팅 버블 트랜스크립트 렌더러 — 에이전트 왼쪽, 사용자 오른쪽)
+// Render stylish chat bubbles for User and Agent (사용자와 에이전트를 위한 세련된 채팅 말풍선을 렌더링합니다)
+// Agent messages align left with an emerald glassmorphism style.
+// User messages align right with a blue glassmorphism style for clear visual distinction.
+// (에이전트 메시지는 에메랄드 글래스모피즘 스타일로 왼쪽 정렬.
+//  사용자 메시지는 명확한 시각적 구분을 위해 파란색 글래스모피즘 스타일로 오른쪽 정렬)
 function TranscriptView({ turns }: { turns: TranscriptTurn[] }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {turns.map((turn, i) => {
         const isAgent = turn.role === 'agent';
         return (
           <div
             key={i}
-            className={`flex items-end gap-2 ${isAgent ? 'justify-start' : 'justify-end'}`}
+            className={`flex items-end gap-2.5 ${isAgent ? 'justify-start' : 'justify-end'}`}
           >
-            {/* Agent avatar — left (에이전트 아바타 — 왼쪽) */}
+            {/* Agent avatar — emerald ring on the left (왼쪽 에메랄드 링 에이전트 아바타) */}
             {isAgent && (
-              <div className="h-7 w-7 shrink-0 rounded-full bg-emerald-900/70 flex items-center justify-center">
+              <div className="h-8 w-8 shrink-0 rounded-full bg-emerald-500/20 flex items-center justify-center ring-1 ring-emerald-500/30">
                 <Bot className="h-4 w-4 text-emerald-400" />
               </div>
             )}
 
-            {/* Message bubble (메시지 버블) */}
-            <div
-              className={[
-                'max-w-[75%] rounded-2xl px-3 py-2 text-sm leading-relaxed',
-                isAgent
-                  ? 'bg-slate-700 text-slate-100 rounded-tl-sm'
-                  : 'bg-slate-600 text-slate-100 rounded-tr-sm',
-              ].join(' ')}
-            >
-              {turn.content}
+            {/* Bubble + role label wrapper (말풍선 + 역할 레이블 래퍼) */}
+            <div className={`flex flex-col gap-1 max-w-[75%] ${isAgent ? 'items-start' : 'items-end'}`}>
+
+              {/* Role label — small caption above each bubble for clarity (각 말풍선 위 역할 캡션 — 명확성을 위해) */}
+              <span className="text-[10px] font-medium tracking-wide text-slate-500 px-1">
+                {isAgent ? 'AI Agent' : 'Customer'}
+              </span>
+
+              {isAgent ? (
+                // Agent bubble — dark slate with subtle border and shadow (에이전트 말풍선 — 미묘한 테두리와 그림자가 있는 어두운 슬레이트)
+                <div className="bg-slate-800/80 border border-slate-700/50 text-slate-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed shadow-md">
+                  {turn.content}
+                </div>
+              ) : (
+                // User bubble — blue glassmorphism for high contrast readability (높은 대비 가독성을 위한 파란색 글래스모피즘 사용자 말풍선)
+                <div className="bg-blue-600/10 border border-blue-500/20 text-blue-50 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed shadow-md">
+                  {turn.content}
+                </div>
+              )}
             </div>
 
-            {/* User avatar — right (사용자 아바타 — 오른쪽) */}
+            {/* User avatar — blue ring on the right (오른쪽 파란색 링 사용자 아바타) */}
             {!isAgent && (
-              <div className="h-7 w-7 shrink-0 rounded-full bg-slate-600 flex items-center justify-center">
-                <User className="h-4 w-4 text-slate-300" />
+              <div className="h-8 w-8 shrink-0 rounded-full bg-blue-500/20 flex items-center justify-center ring-1 ring-blue-500/30">
+                <User className="h-4 w-4 text-blue-400" />
               </div>
             )}
           </div>
