@@ -87,17 +87,20 @@ export function CallStatsWidget({ storeId }: CallStatsWidgetProps) {
             .select('call_status, duration, cost')
             .eq('store_id', storeId),
 
-      // Rule 5: AI Revenue — SUM(total_amount) from orders filtered by created_at (규칙 5: AI 매출 — created_at으로 필터링된 orders에서 SUM(total_amount))
+      // Rule 5: AI Revenue — SUM(total_amount) from PAID orders only, filtered by created_at (규칙 5: AI 매출 — created_at으로 필터링된 결제 완료 주문의 SUM(total_amount)만)
+      // Strictly paid status — pending/cancelled orders must never inflate AI Revenue or Upsell (엄격한 결제 완료 상태 — 대기/취소 주문이 AI 매출 또는 업셀을 절대 부풀려선 안 됨)
       boundaryIso
         ? supabase
             .from('orders')
             .select('total_amount')
             .eq('store_id', storeId)
+            .eq('status', 'paid')
             .gte('created_at', boundaryIso)
         : supabase
             .from('orders')
             .select('total_amount')
-            .eq('store_id', storeId),
+            .eq('store_id', storeId)
+            .eq('status', 'paid'),
     ]);
 
     const errs: string[] = [];
