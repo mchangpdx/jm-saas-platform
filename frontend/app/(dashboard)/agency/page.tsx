@@ -32,7 +32,7 @@ export default function AgencyOverviewPage() {
           Agency Overall Performance
         </h2>
         <p className="mt-1 text-sm text-gray-500">
-          Aggregated across all stores. Select a specific store in the sidebar to filter.
+          Aggregated across all stores.
         </p>
       </div>
 
@@ -43,7 +43,11 @@ export default function AgencyOverviewPage() {
           (에이전시 모드 전체 분석 대시보드 — 항상 렌더링, 조건부 게이트 없음.
            AnalyticsDashboard가 내부적으로 빈/오류 상태를 처리하므로 여기서 agentId 게이트 불필요.
            agentId 게이트가 오류 블록을 표시한 원인: StoreContext 기본값 agentId='' 이 falsy이기 때문) */}
-      <AnalyticsDashboard mode="agency" id={agentId} />
+      {/* forceAggregation={true} — completely ignores the sidebar store dropdown on this page.
+          The regular Analytics page omits this prop so the dropdown still filters there.
+          (forceAggregation={true} — 이 페이지에서 사이드바 매장 드롭다운을 완전히 무시.
+           일반 Analytics 페이지는 이 prop을 생략하여 드롭다운 필터링이 정상 동작) */}
+      <AnalyticsDashboard mode="agency" id={agentId} forceAggregation={true} />
 
       {/* Module shortcuts — quick navigation to key agency modules (주요 에이전시 모듈로의 빠른 내비게이션) */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

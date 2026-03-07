@@ -182,13 +182,20 @@ function Panel({ title, children, className }: {
 // ── Props ──────────────────────────────────────────────────────────────────────
 
 export interface AnalyticsDashboardProps {
-  mode: 'agency' | 'store';
-  id:   string; // storeId when mode='store' — agencyId when mode='agency' (mode='store'일 때 storeId, mode='agency'일 때 agencyId)
+  mode:              'agency' | 'store';
+  id:                string;  // storeId when mode='store' — agencyId when mode='agency' (mode='store'일 때 storeId, mode='agency'일 때 agencyId)
+  // When true, agency mode always aggregates ALL stores and completely ignores the sidebar dropdown.
+  // Used by the Agency Overview page so it never bleeds into single-store context.
+  // The regular Analytics page leaves this unset (false) so the dropdown still works there.
+  // (true이면 agency 모드는 항상 모든 매장을 집계하고 사이드바 드롭다운을 완전히 무시.
+  //  에이전시 개요 페이지에서 단일 매장 컨텍스트로 bleed되지 않도록 사용.
+  //  일반 Analytics 페이지는 이 값을 미설정(false)하여 드롭다운이 정상 동작)
+  forceAggregation?: boolean;
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
+export function AnalyticsDashboard({ mode, id, forceAggregation = false }: AnalyticsDashboardProps) {
   const router = useRouter();
 
   // Agency store-context isolation — when a specific store is chosen in the sidebar dropdown,
@@ -214,6 +221,15 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
   //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
   const fetchData = useCallback(async () => {
+    // UUID guard — never pass an empty string to Supabase; it causes "invalid input syntax for type uuid" errors.
+    // id comes from StoreContext which defaults to '' before the provider mounts.
+    // (UUID 가드 — 빈 문자열을 Supabase에 전달하지 않음; "invalid input syntax for type uuid" 오류 발생.
+    //  id는 StoreContext에서 오고 provider 마운트 전에는 '' 기본값을 가짐)
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setNoStores(false);
@@ -222,11 +238,19 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     let   storeIds: string[] = [];
 
     if (mode === 'agency') {
-      if (selectedStoreId) {
-        // A specific store is selected in the sidebar — scope to that store only (사이드바에서 특정 매장 선택 — 해당 매장 데이터만 스코프)
-        storeIds = [selectedStoreId];
+      // forceAggregation bypasses the sidebar dropdown entirely — always aggregate all stores.
+      // Used by the Agency Overview page to prevent context bleed from the store selector.
+      // Without forceAggregation, the dropdown can narrow the view to a single store.
+      // (forceAggregation은 사이드바 드롭다운을 완전히 우회 — 항상 모든 매장 집계.
+      //  에이전시 개요 페이지에서 매장 선택기의 컨텍스트 bleed를 방지하는 데 사용.
+      //  forceAggregation 없이는 드롭다운이 단일 매장으로 뷰를 좁힐 수 있음)
+      const scopeToStore = !forceAggregation && selectedStoreId;
+
+      if (scopeToStore) {
+        // A specific store is selected and aggregation is not forced — scope to that store only (특정 매장 선택 및 집계 강제 아님 — 해당 매장 데이터만 스코프)
+        storeIds = [selectedStoreId as string];
       } else {
-        // No specific store selected — aggregate across all stores for this agency (특정 매장 미선택 — 에이전시 전체 매장 데이터 집계)
+        // Aggregate all stores for this agency — either no store selected or forceAggregation=true (에이전시 전체 매장 집계 — 매장 미선택이거나 forceAggregation=true)
         const { data: storeRows, error: storesErr } = await supabase
           .from('stores')
           .select('id')
@@ -335,7 +359,7 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
 
     setLoading(false);
   // dateRange is a dep so changing the period fires a fresh server-side query (기간 변경이 새로운 서버 사이드 쿼리를 실행하도록 dateRange를 의존성으로 추가)
-  }, [mode, id, dateRange, selectedStoreId]);
+  }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
 
   // Trigger fetchData whenever mode, id, or dateRange changes (mode, id, dateRange 변경 시 fetchData 실행)
   useEffect(() => { fetchData(); }, [fetchData]);
