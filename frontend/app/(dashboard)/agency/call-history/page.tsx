@@ -33,19 +33,21 @@ interface TranscriptTurn {
   words?:  unknown[]; // optional word-level timestamps from Retell (Retell 단어 레벨 타임스탬프 — 선택)
 }
 
-// Row shape mirroring the call_logs Supabase table columns (call_logs Supabase 테이블 컬럼 반영 행 형태)
+// Row shape mirroring the exact call_logs Postgres column names — every field must match the DB exactly.
+// (정확한 call_logs Postgres 컬럼명을 반영한 행 형태 — 모든 필드가 DB와 정확히 일치해야 함)
 interface CallLog {
-  call_id:           string;
-  agent_id:          string;
-  store_id:          string;
-  start_time:   string;        // ISO-8601 timestamptz (ISO-8601 타임스탬프)
-  duration:       number | null;
-  user_sentiment:    string | null; // "Positive" | "Neutral" | "Negative" | null (Retell 값)
-  call_status:       string;
-  cost:              number | null;
-  recording_url:     string | null;
-  summary:           string | null;
-  transcript_object: TranscriptTurn[] | null; // JSONB array from Retell (Retell JSONB 배열)
+  call_id:        string;
+  agent_id:       string;
+  store_id:       string;
+  start_time:     string;               // ISO-8601 timestamptz DB column (ISO-8601 타임스탬프 DB 컬럼)
+  customer_phone: string | null;        // Retell from_number mapped to this column (Retell from_number이 이 컬럼에 매핑)
+  duration:       number | null;        // Integer seconds — NOT milliseconds (정수 초 — 밀리초 아님)
+  sentiment:      string | null;        // DB column 'sentiment', NOT 'user_sentiment' (DB 컬럼 'sentiment' — 'user_sentiment' 아님)
+  call_status:    string;
+  cost:           number | null;
+  recording_url:  string | null;
+  summary:        string | null;
+  transcript:     TranscriptTurn[] | null; // DB column 'transcript', NOT 'transcript_object' (DB 컬럼 'transcript' — 'transcript_object' 아님)
 }
 
 // Active date preset selection (활성 날짜 프리셋 선택)
@@ -53,12 +55,14 @@ type DatePreset = 'today' | 'week' | 'month' | 'custom' | null;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-// Format duration from milliseconds to MM:SS display string (밀리초를 MM:SS 표시 문자열로 변환)
-function formatDuration(ms: number | null): string {
-  if (ms == null) return '—';
-  const totalSec = Math.floor(ms / 1000);
-  const mm = Math.floor(totalSec / 60).toString().padStart(2, '0');
-  const ss = (totalSec % 60).toString().padStart(2, '0');
+// Format duration from integer seconds to MM:SS display string.
+// The DB stores seconds directly — no ms→s conversion needed here.
+// (정수 초를 MM:SS 표시 문자열로 변환.
+//  DB는 초를 직접 저장하므로 여기서 ms→s 변환 불필요)
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return '—';
+  const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const ss = (seconds % 60).toString().padStart(2, '0');
   return `${mm}:${ss}`;
 }
 
@@ -105,17 +109,18 @@ const SENTIMENT_STYLES: Record<string, string> = {
 // ── Data layer ────────────────────────────────────────────────────────────────
 
 // Fetch up to 200 call_logs for a store ordered by start_time descending.
-// Client-side filters are applied after fetch to avoid extra round-trips.
+// Column names in select() must match exact Postgres column names — any mismatch causes a schema cache error.
 // (start_time 내림차순으로 매장의 통화 로그 최대 200건 조회.
-//  추가 왕복 방지를 위해 클라이언트에서 필터 적용)
+//  select()의 컬럼명은 정확한 Postgres 컬럼명과 일치해야 함 — 불일치 시 스키마 캐시 오류 발생)
 async function fetchCallLogs(
   storeId: string,
 ): Promise<{ data: CallLog[] | null; error: string | null }> {
   const { data, error } = await getSupabaseClient()
     .from('call_logs')
     .select(
-      'call_id, agent_id, store_id, start_time, duration, ' +
-      'user_sentiment, call_status, cost, recording_url, summary, transcript_object',
+      // Fetch using exact DB column names (정확한 DB 컬럼명을 사용하여 통화 기록을 가져옵니다)
+      'call_id, agent_id, store_id, start_time, customer_phone, duration, ' +
+      'sentiment, call_status, cost, recording_url, summary, transcript',
     )
     .eq('store_id', storeId)
     .order('start_time', { ascending: false })
