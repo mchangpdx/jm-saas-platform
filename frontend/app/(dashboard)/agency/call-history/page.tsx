@@ -38,7 +38,7 @@ interface CallLog {
   call_id:           string;
   agent_id:          string;
   store_id:          string;
-  start_timestamp:   string;        // ISO-8601 timestamptz (ISO-8601 타임스탬프)
+  start_time:   string;        // ISO-8601 timestamptz (ISO-8601 타임스탬프)
   duration_ms:       number | null;
   user_sentiment:    string | null; // "Positive" | "Neutral" | "Negative" | null (Retell 값)
   call_status:       string;
@@ -104,9 +104,9 @@ const SENTIMENT_STYLES: Record<string, string> = {
 
 // ── Data layer ────────────────────────────────────────────────────────────────
 
-// Fetch up to 200 call_logs for a store ordered by start_timestamp descending.
+// Fetch up to 200 call_logs for a store ordered by start_time descending.
 // Client-side filters are applied after fetch to avoid extra round-trips.
-// (start_timestamp 내림차순으로 매장의 통화 로그 최대 200건 조회.
+// (start_time 내림차순으로 매장의 통화 로그 최대 200건 조회.
 //  추가 왕복 방지를 위해 클라이언트에서 필터 적용)
 async function fetchCallLogs(
   storeId: string,
@@ -114,11 +114,11 @@ async function fetchCallLogs(
   const { data, error } = await getSupabaseClient()
     .from('call_logs')
     .select(
-      'call_id, agent_id, store_id, start_timestamp, duration_ms, ' +
+      'call_id, agent_id, store_id, start_time, duration_ms, ' +
       'user_sentiment, call_status, cost, recording_url, summary, transcript_object',
     )
     .eq('store_id', storeId)
-    .order('start_timestamp', { ascending: false })
+    .order('start_time', { ascending: false })
     .limit(200);
 
   return {
@@ -166,7 +166,7 @@ function CallCard({
       {/* Date/time + sentiment row (날짜/시간 + 감정 행) */}
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs text-slate-400">
-          {formatDateTime(call.start_timestamp)}
+          {formatDateTime(call.start_time)}
         </span>
         <SentimentBadge sentiment={call.user_sentiment} />
       </div>
@@ -281,7 +281,7 @@ function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div>
               <p className="text-xs text-slate-500 mb-0.5">Start Time</p>
-              <p className="text-slate-200">{formatDateTime(call.start_timestamp)}</p>
+              <p className="text-slate-200">{formatDateTime(call.start_time)}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500 mb-0.5">Duration</p>
@@ -420,10 +420,10 @@ export default function CallHistoryPage() {
       ) return false;
 
       // Date range filter — lower bound (날짜 범위 필터 — 하한)
-      if (filterFrom && new Date(c.start_timestamp) < new Date(filterFrom)) return false;
+      if (filterFrom && new Date(c.start_time) < new Date(filterFrom)) return false;
 
       // Date range filter — upper bound (날짜 범위 필터 — 상한)
-      if (filterTo && new Date(c.start_timestamp) > new Date(filterTo)) return false;
+      if (filterTo && new Date(c.start_time) > new Date(filterTo)) return false;
 
       // Sentiment filter — exact match against Retell sentiment string (감정 필터 — Retell 감정 문자열 정확 일치)
       if (sentimentFilter && c.user_sentiment !== sentimentFilter) return false;
