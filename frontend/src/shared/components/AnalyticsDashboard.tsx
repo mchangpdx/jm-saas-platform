@@ -42,7 +42,8 @@ import {
   ChevronRight,
   Store,
 } from 'lucide-react';
-import { getSupabaseClient } from '@/shared/api/supabaseClient';
+import { getSupabaseClient }  from '@/shared/api/supabaseClient';
+import { useSessionStore }    from '@/shared/stores/sessionStore';
 import {
   type DateRange,
   type KpiCallLog,
@@ -190,6 +191,11 @@ export interface AnalyticsDashboardProps {
 export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   const router = useRouter();
 
+  // Agency store-context isolation — when a specific store is chosen in the sidebar dropdown,
+  // restrict agency-mode data to that store only; null means aggregate all stores.
+  // (에이전시 매장 컨텍스트 격리 — 사이드바 드롭다운에서 특정 매장 선택 시 해당 매장 데이터만 표시; null이면 전체 집계)
+  const selectedStoreId = useSessionStore((s) => s.selectedStoreId);
+
   // ── State ──────────────────────────────────────────────────────────────────
   const [logs,      setLogs     ] = useState<CallLog[]>([]);
   const [orders,    setOrders   ] = useState<Order[]>([]);
@@ -216,27 +222,32 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     let   storeIds: string[] = [];
 
     if (mode === 'agency') {
-      // Fetch all stores that belong to this agency via the agency_id column (agency_id 컬럼을 통해 이 에이전시에 속한 모든 매장 조회)
-      const { data: storeRows, error: storesErr } = await supabase
-        .from('stores')
-        .select('id')
-        .eq('agency_id', id);
+      if (selectedStoreId) {
+        // A specific store is selected in the sidebar — scope to that store only (사이드바에서 특정 매장 선택 — 해당 매장 데이터만 스코프)
+        storeIds = [selectedStoreId];
+      } else {
+        // No specific store selected — aggregate across all stores for this agency (특정 매장 미선택 — 에이전시 전체 매장 데이터 집계)
+        const { data: storeRows, error: storesErr } = await supabase
+          .from('stores')
+          .select('id')
+          .eq('agency_id', id);
 
-      if (storesErr) {
-        setError(storesErr.message);
-        setLoading(false);
-        return;
-      }
+        if (storesErr) {
+          setError(storesErr.message);
+          setLoading(false);
+          return;
+        }
 
-      storeIds = (storeRows ?? []).map((r: { id: string }) => r.id);
+        storeIds = (storeRows ?? []).map((r: { id: string }) => r.id);
 
-      if (storeIds.length === 0) {
-        // Agency exists but has no stores attached yet — show empty state (에이전시는 존재하나 아직 연결된 매장 없음 — 빈 상태 표시)
-        setNoStores(true);
-        setLogs([]);
-        setOrders([]);
-        setLoading(false);
-        return;
+        if (storeIds.length === 0) {
+          // Agency exists but has no stores attached yet — show empty state (에이전시는 존재하나 아직 연결된 매장 없음 — 빈 상태 표시)
+          setNoStores(true);
+          setLogs([]);
+          setOrders([]);
+          setLoading(false);
+          return;
+        }
       }
     } else {
       // Store mode — use id directly as the single store scope (매장 모드 — id를 단일 매장 스코프로 직접 사용)
@@ -324,7 +335,7 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
 
     setLoading(false);
   // dateRange is a dep so changing the period fires a fresh server-side query (기간 변경이 새로운 서버 사이드 쿼리를 실행하도록 dateRange를 의존성으로 추가)
-  }, [mode, id, dateRange]);
+  }, [mode, id, dateRange, selectedStoreId]);
 
   // Trigger fetchData whenever mode, id, or dateRange changes (mode, id, dateRange 변경 시 fetchData 실행)
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -551,7 +562,9 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Analytics</h2>
           <p className="text-sm text-gray-500 mt-0.5">
             {mode === 'agency'
-              ? 'Aggregated AI voice performance across all stores.'
+              ? (selectedStoreId
+                  ? 'Showing data for selected store — change the sidebar dropdown to switch or aggregate.'
+                  : 'Aggregated AI voice performance across all stores.')
               : 'AI voice agent performance for this store.'}
           </p>
         </div>

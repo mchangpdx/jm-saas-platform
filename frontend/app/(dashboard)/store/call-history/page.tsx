@@ -526,8 +526,8 @@ export default function StoreCallHistoryPage() {
 
       {/* Page heading (페이지 제목) */}
       <div className="px-1 pb-4 shrink-0">
-        <h2 className="text-2xl font-bold tracking-tight text-slate-100">Call History</h2>
-        <p className="mt-0.5 text-sm text-slate-500">
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900">Call History</h2>
+        <p className="mt-0.5 text-sm text-gray-500">
           Review AI voice agent call logs, recordings, and transcripts for your store.
         </p>
       </div>
