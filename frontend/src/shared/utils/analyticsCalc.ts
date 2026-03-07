@@ -13,30 +13,33 @@ export type DateRange = 'today' | 'week' | 'month' | 'all';
 // ── Date boundary helpers ──────────────────────────────────────────────────────
 
 // Compute the inclusive lower-bound Date for a given range, or null for "all time".
-// Uses local midnight so the window aligns with the store's day boundaries, not UTC.
+// week and month use ROLLING windows (7 and 30 days back from right now) so the filter
+// is always relative to the current moment, not the start of a calendar week or month.
+// today uses local midnight so it captures the full current calendar day.
 // This is the ONLY place where date range boundaries are computed — do not duplicate.
 // (주어진 범위의 포함 하한 Date 계산, "전체 기간"이면 null 반환.
-//  매장의 일자 경계에 맞추기 위해 UTC가 아닌 로컬 자정 사용.
+//  week와 month는 달력 기준이 아닌 현재 시각 기준 롤링 창(각 7일, 30일)을 사용.
+//  today는 로컬 자정을 사용하여 현재 달력 일 전체를 포함.
 //  이 함수가 날짜 범위 경계를 계산하는 유일한 위치 — 중복 금지)
 export function getDateBoundary(range: DateRange): Date | null {
   if (range === 'all') return null;
 
-  const d = new Date();
+  const now = new Date();
 
   if (range === 'today') {
-    // Midnight of the current local calendar day (현재 로컬 달력 일의 자정)
+    // Midnight of today in local time — includes the full current calendar day (로컬 시간 기준 오늘 자정 — 현재 달력 일 전체 포함)
+    const d = new Date(now);
     d.setHours(0, 0, 0, 0);
-  } else if (range === 'week') {
-    // Midnight of the most recent Sunday (가장 최근 일요일의 자정)
-    d.setDate(d.getDate() - d.getDay());
-    d.setHours(0, 0, 0, 0);
-  } else {
-    // Midnight of the first day of the current calendar month (현재 달력 월 첫째 날의 자정)
-    d.setDate(1);
-    d.setHours(0, 0, 0, 0);
+    return d;
   }
 
-  return d;
+  if (range === 'week') {
+    // Rolling 7 days — exactly 7 × 24 h ago from right now, not the last Sunday (현재 기준 정확히 7일 전 롤링 창 — 지난 일요일 기준이 아님)
+    return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  // month — rolling 30 days: exactly 30 × 24 h ago from right now, not the 1st of the month (현재 기준 정확히 30일 전 롤링 창 — 이번 달 1일 기준이 아님)
+  return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 }
 
 // Convert a DateRange to an ISO string suitable for Supabase .gte() filters, or null for no filter.

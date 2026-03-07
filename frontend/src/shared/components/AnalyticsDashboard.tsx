@@ -388,35 +388,85 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     return result;
   }, [logs, orders, dateRange]);
 
-  // Daily series merging call counts (start_time) and paid revenue (created_at) for the ComposedChart (ComposedChart용 통화 건수와 결제 매출을 병합한 일별 계열)
+  // Build the ComposedChart dataset — one entry per calendar day.
+  // PASS 1: iterate call_logs → increment `calls` keyed by start_time local date.
+  // PASS 2: iterate paid orders → accumulate `revenue` keyed by created_at local date.
+  // The two passes are completely independent so neither can contaminate the other's series.
+  // <Area dataKey="calls">  strictly reads the calls field (call_logs only).
+  // <Line dataKey="revenue"> strictly reads the revenue field (paid orders only).
+  // (ComposedChart 데이터셋 구성 — 달력 일별 항목 1개.
+  //  패스 1: call_logs 순회 → start_time 로컬 날짜 기준 calls 증가.
+  //  패스 2: 결제 주문 순회 → created_at 로컬 날짜 기준 revenue 누적.
+  //  두 패스는 완전히 독립적으로 서로의 계열을 오염시킬 수 없음)
   const composedData = useMemo(() => {
-    const byDate: Record<string, { key: string; label: string; calls: number; revenue: number }> = {};
 
-    // Accumulate one call per log row using start_time date prefix (start_time 날짜 접두사로 각 로그 행의 통화 1건 누적)
+    // Convert any ISO timestamp to a local-timezone YYYY-MM-DD sort key.
+    // Using getFullYear/Month/Date avoids the UTC-slice bug where a UTC date like
+    // "2026-03-07T01:00:00Z" maps to "2026-03-06" in UTC-5 local time.
+    // (UTC 슬라이스 버그를 피하기 위해 로컬 시간대 기준 YYYY-MM-DD 정렬 키로 변환.
+    //  "2026-03-07T01:00:00Z"가 UTC-5 로컬에서 "2026-03-06"으로 매핑되는 문제 방지)
+    function toSortKey(isoString: string): string {
+      const d = new Date(isoString);
+      return [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, '0'),
+        String(d.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+
+    // Convert any ISO timestamp to the "MMM D" display label shown on the chart x-axis (차트 X축에 표시되는 "MMM D" 표시 레이블로 변환)
+    function toLabel(isoString: string): string {
+      return new Date(isoString).toLocaleDateString('en-US', {
+        month: 'short',
+        day:   'numeric',
+      });
+    }
+
+    // Unified day bucket — every day with at least one log OR one order gets an entry (최소 하나의 로그 또는 주문이 있는 날에 항목 생성)
+    const byDay: Record<string, { sortKey: string; label: string; calls: number; revenue: number }> = {};
+
+    // ── PASS 1: call_logs → `calls` field only (패스 1: call_logs → calls 필드만)
+    // Each log row represents exactly one call — always increment calls, never touch revenue.
+    // (각 로그 행은 정확히 하나의 통화를 나타냄 — 항상 calls 증가, revenue는 절대 건드리지 않음)
     logs.forEach((l) => {
-      const key   = l.start_time.slice(0, 10);
-      const label = new Date(l.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      if (!byDate[key]) byDate[key] = { key, label, calls: 0, revenue: 0 };
-      byDate[key].calls++;
+      const sortKey = toSortKey(l.start_time);
+      const label   = toLabel(l.start_time);
+      if (!byDay[sortKey]) byDay[sortKey] = { sortKey, label, calls: 0, revenue: 0 };
+      byDay[sortKey].calls += 1; // explicit +1 to make the intent unambiguous (의도를 명확히 하기 위해 명시적 +1)
     });
 
-    // Accumulate paid revenue per day — total_amount is already in USD, no division needed (일별 결제 매출 누적 — total_amount는 이미 USD 단위, 나눗셈 불필요)
+    // ── PASS 2: paid orders → `revenue` field only (패스 2: 결제 주문 → revenue 필드만)
+    // Only orders with status='paid' reach this array (enforced by the Supabase query).
+    // Accumulate total_amount (already in USD) — never touch calls.
+    // (status='paid' 주문만 이 배열에 도달함(Supabase 쿼리로 강제).
+    //  total_amount(이미 USD 단위) 누적 — calls는 절대 건드리지 않음)
     orders.forEach((o) => {
-      const key   = o.created_at.slice(0, 10);
-      const label = new Date(o.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      if (!byDate[key]) byDate[key] = { key, label, calls: 0, revenue: 0 };
-      byDate[key].revenue += (o.total_amount ?? 0);
+      const sortKey = toSortKey(o.created_at);
+      const label   = toLabel(o.created_at);
+      if (!byDay[sortKey]) byDay[sortKey] = { sortKey, label, calls: 0, revenue: 0 };
+      byDay[sortKey].revenue += (o.total_amount ?? 0); // USD, no /100 needed (USD, /100 불필요)
     });
 
-    return Object.values(byDate)
-      .sort((a, b) => a.key.localeCompare(b.key))
+    // Sort chronologically by the YYYY-MM-DD sort key, then shape for Recharts (YYYY-MM-DD 정렬 키 기준 시간순 정렬 후 Recharts 형식으로 변환)
+    const series = Object.values(byDay)
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
       .map(({ label, calls, revenue }) => ({
-        date:    label,
-        calls,
-        // Round to 2 dp to eliminate floating-point accumulation drift (부동소수점 누적 오차 제거를 위해 소수점 2자리로 반올림)
-        revenue: Math.round(revenue * 100) / 100,
+        date:    label,                             // x-axis label "Mar 7" (X축 레이블 "Mar 7")
+        calls,                                     // → <Area dataKey="calls">
+        revenue: Math.round(revenue * 100) / 100,  // → <Line dataKey="revenue"> (부동소수점 오차 방지)
       }));
-  }, [logs, orders]);
+
+    // [X-Ray] Log chart series so we can verify calls and revenue map to the correct series (calls와 revenue가 올바른 계열에 매핑되는지 확인하기 위해 차트 계열을 로그에 출력)
+    console.log('[X-Ray] composedData series (' + series.length + ' days):', {
+      dateRange,
+      firstEntry: series[0]  ?? null,
+      lastEntry:  series[series.length - 1] ?? null,
+      totalCalls:   series.reduce((s, d) => s + d.calls, 0),
+      totalRevenue: series.reduce((s, d) => s + d.revenue, 0).toFixed(2),
+    });
+
+    return series;
+  }, [logs, orders, dateRange]);
 
   // Call count by status for the Donut chart — zero-value segments excluded (0값 세그먼트를 제외한 도넛 차트용 상태별 통화 건수)
   const statusData = useMemo(() => [
@@ -513,17 +563,17 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Period selector — each click triggers a fresh server-side fetch (각 클릭이 새로운 서버 사이드 조회를 트리거하는 기간 선택기) */}
-          <div className="flex rounded-xl border border-slate-800/70 overflow-hidden">
+          {/* Period selector — each click triggers a full server-side re-fetch with the new rolling window (각 클릭이 새로운 롤링 창으로 전체 서버 사이드 재조회를 트리거) */}
+          <div className="flex rounded-xl border border-slate-700/50 overflow-hidden backdrop-blur-md">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
                 onClick={() => setDateRange(p.value)}
                 className={[
-                  'px-3.5 py-1.5 text-xs font-semibold transition-colors',
+                  'px-3.5 py-1.5 text-xs font-semibold transition-all',
                   dateRange === p.value
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200',
+                    ? 'bg-emerald-600 text-white shadow-inner'
+                    : 'bg-slate-900/60 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200',
                 ].join(' ')}
               >
                 {p.label}
@@ -531,11 +581,11 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
             ))}
           </div>
 
-          {/* CSV export button — disabled when no data is loaded (데이터가 없을 때 비활성화되는 CSV 내보내기 버튼) */}
+          {/* CSV export — disabled when no data available (데이터 없을 때 비활성화되는 CSV 내보내기) */}
           <button
             onClick={downloadCSV}
             disabled={loading || logs.length === 0}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-800/70 bg-slate-900/60 text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Download className="h-3.5 w-3.5" />
             CSV
@@ -545,17 +595,17 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
           <button
             onClick={() => window.print()}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-800/70 bg-slate-900/60 text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FileText className="h-3.5 w-3.5" />
             PDF
           </button>
 
-          {/* Refresh — re-runs fetchData with the current period (현재 기간으로 fetchData를 재실행하는 새로고침) */}
+          {/* Refresh — re-runs fetchData with the current rolling window (현재 롤링 창으로 fetchData를 재실행) */}
           <button
             onClick={fetchData}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-800/70 bg-slate-900/60 text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-md text-xs font-semibold text-slate-400 hover:text-white hover:border-slate-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             Refresh
