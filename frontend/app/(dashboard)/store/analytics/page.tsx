@@ -16,6 +16,7 @@ export default function StoreAnalyticsPage() {
 
   return (
     <AnalyticsDashboard
+      mode="store"
       storeId={storeId}
       emptyStateLabel="No store linked to your account yet."
     />

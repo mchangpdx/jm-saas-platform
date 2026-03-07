@@ -1,16 +1,16 @@
-// Analytics Dashboard — shared component consumed by both agency and store analytics pages.
-// Receives storeId as a prop; the caller supplies the correct ID from Zustand session state.
-// All data is fetched from Supabase call_logs using only verified schema column names.
-// (애널리틱스 대시보드 — 에이전시 및 매장 애널리틱스 페이지에서 공유하는 컴포넌트.
-//  storeId를 prop으로 받으며, 호출자가 Zustand 세션 상태에서 올바른 ID를 전달합니다.
-//  모든 데이터는 검증된 스키마 컬럼명만 사용하여 Supabase call_logs에서 조회합니다.)
+// Analytics Dashboard v2 — shared component consumed by agency and store analytics pages.
+// Supports mode='agency' (auto-fetches all stores via auth) or mode='store' (uses storeId prop).
+// (애널리틱스 대시보드 v2 — 에이전시/매장 애널리틱스 페이지에서 공유하는 컴포넌트.
+//  mode='agency'는 auth로 전체 매장 자동 조회, mode='store'는 storeId prop 사용)
 
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  AreaChart,
+  ComposedChart,
   Area,
+  Line,
   BarChart,
   Bar,
   PieChart,
@@ -23,8 +23,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-// Local tooltip props interface — avoids recharts v3 generic TooltipProps type changes.
-// (로컬 툴팁 props 인터페이스 — recharts v3 제네릭 TooltipProps 타입 변경을 피함)
+// Local tooltip props interface — avoids recharts v3 generic TooltipProps type incompatibilities.
+// (로컬 툴팁 props 인터페이스 — recharts v3 제네릭 TooltipProps 타입 비호환 문제 회피)
 interface TooltipEntry {
   name?:    string;
   value?:   number | string;
@@ -40,11 +40,15 @@ import {
   Phone,
   Clock,
   DollarSign,
+  TrendingUp,
   RefreshCw,
   AlertTriangle,
   BarChart3,
   Activity,
   CheckCircle2,
+  Download,
+  FileText,
+  ChevronRight,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/shared/api/supabaseClient';
 
@@ -53,12 +57,20 @@ import { getSupabaseClient } from '@/shared/api/supabaseClient';
 // Exact column subset fetched from call_logs — must match verified Postgres schema.
 // (call_logs에서 조회하는 정확한 컬럼 서브셋 — 검증된 Postgres 스키마와 일치해야 함)
 interface CallLog {
+  call_id:        string;
   start_time:     string;
   duration:       number | null;  // integer seconds (정수 초)
   sentiment:      string | null;  // 'Positive' | 'Neutral' | 'Negative'
   call_status:    string;         // 'Successful' | 'Unsuccessful'
-  cost:           number | null;
+  cost:           number | null;  // stored in cents — divide by 100 for display (센트 단위 저장)
   customer_phone: string | null;
+}
+
+// Order row — used solely to compute AI Revenue KPI and daily revenue series.
+// (주문 행 — AI 매출 KPI 및 일별 매출 계열 계산에만 사용)
+interface Order {
+  created_at:   string;
+  total_amount: number | null;  // in cents (센트 단위)
 }
 
 // Date range preset options for the control bar (컨트롤 바의 날짜 범위 프리셋 옵션)
@@ -86,10 +98,10 @@ function formatDuration(seconds: number | null): string {
   return `${mm}:${ss}`;
 }
 
-// Format a numeric cost total to a dollar string with 2 decimal places.
-// (숫자 비용 합계를 소수점 2자리 달러 문자열로 포맷)
-function formatCost(cost: number): string {
-  return `$${cost.toFixed(2)}`;
+// Format a numeric cost value (already in dollars) to a dollar string with 2 decimal places.
+// (이미 달러 단위인 숫자 비용을 소수점 2자리 달러 문자열로 포맷)
+function formatCost(dollars: number): string {
+  return `$${dollars.toFixed(2)}`;
 }
 
 // Return a Date marking the start of the selected date range, or null for "all time".
@@ -115,6 +127,7 @@ function getDateBoundary(range: DateRange): Date | null {
 // Named color constants keep chart styling consistent and editable in one place.
 // (차트 스타일링을 일관되게 유지하고 한 곳에서 수정 가능하도록 색상 상수를 명명)
 const C_EMERALD = '#10b981';
+const C_INDIGO  = '#6366f1';
 const C_ROSE    = '#f43f5e';
 const C_AMBER   = '#f59e0b';
 const C_SLATE   = '#475569';
@@ -127,12 +140,14 @@ const SENTIMENT_COLORS: Record<string, string> = {
 
 const STATUS_COLORS = [C_EMERALD, C_ROSE];
 
+const DAY_LABELS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const HOUR_LABELS = ['9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm','9pm','10pm'];
+
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-// Generic dark-themed Recharts tooltip — injected via the `content` prop on <Tooltip>.
-// Uses a local interface instead of recharts TooltipProps to stay compatible with v3 type changes.
-// (Recharts <Tooltip>의 content prop으로 주입되는 범용 다크 테마 툴팁.
-//  v3 타입 변경에 호환되도록 recharts TooltipProps 대신 로컬 인터페이스 사용)
+// Generic dark-themed Recharts tooltip injected via the `content` prop on <Tooltip>.
+// Uses a local interface instead of recharts TooltipProps for v3 compatibility.
+// (v3 호환성을 위해 recharts TooltipProps 대신 로컬 인터페이스를 사용하는 범용 다크 테마 툴팁)
 function ChartTooltip({ active, payload, label }: RechartsTipProps) {
   if (!active || !payload?.length) return null;
   return (
@@ -179,7 +194,7 @@ function KpiCard({
   label:   string;
   value:   string;
   sub?:    string;
-  accent?: 'emerald' | 'blue' | 'amber' | 'rose';
+  accent?: 'emerald' | 'blue' | 'amber' | 'rose' | 'indigo';
 }) {
   // Map accent variant to matching Tailwind color classes (액센트 변형을 Tailwind 색상 클래스에 매핑)
   const accentCls: Record<string, string> = {
@@ -187,6 +202,7 @@ function KpiCard({
     blue:    'text-blue-400    bg-blue-900/30',
     amber:   'text-amber-400   bg-amber-900/30',
     rose:    'text-rose-400    bg-rose-900/30',
+    indigo:  'text-indigo-400  bg-indigo-900/30',
   };
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 flex gap-4 items-start">
@@ -224,101 +240,181 @@ function ChartCard({
 // ── Main exported component ────────────────────────────────────────────────────
 
 export interface AnalyticsDashboardProps {
-  storeId:          string | null;
-  emptyStateLabel?: string; // Text shown when no storeId is provided (storeId가 없을 때 표시할 텍스트)
+  mode:             'agency' | 'store';
+  storeId?:         string | null;  // required when mode='store' (mode='store'일 때 필수)
+  emptyStateLabel?: string;         // shown only when mode='store' and storeId is null (mode='store'이고 storeId가 없을 때만 표시)
 }
 
 export function AnalyticsDashboard({
+  mode,
   storeId,
   emptyStateLabel = 'Select a store to view analytics.',
 }: AnalyticsDashboardProps) {
 
+  const router = useRouter();
+
   // ── State ──────────────────────────────────────────────────────────────────
-  const [allLogs,   setAllLogs  ] = useState<CallLog[]>([]);
-  const [loading,   setLoading  ] = useState(false);
-  const [error,     setError    ] = useState<string | null>(null);
+  const [allLogs,    setAllLogs   ] = useState<CallLog[]>([]);
+  const [allOrders,  setAllOrders ] = useState<Order[]>([]);
+  const [loading,    setLoading   ] = useState(false);
+  const [error,      setError     ] = useState<string | null>(null);
   // Default to 'month' so the dashboard is immediately meaningful on first load.
   // (첫 로드 시 대시보드가 즉시 의미 있게 표시되도록 기본값을 'month'로 설정)
-  const [dateRange, setDateRange] = useState<DateRange>('month');
+  const [dateRange,  setDateRange ] = useState<DateRange>('month');
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
-  // Fetch the 1000 most recent call_logs for the given store — date filtering is done client-side.
-  // Limiting to 1000 rows keeps the response fast while covering all realistic analytics periods.
-  // (주어진 매장의 최근 통화 로그 1000건 조회 — 날짜 필터링은 클라이언트에서 수행.
-  //  응답을 빠르게 유지하면서 현실적인 분석 기간을 모두 커버하도록 1000행으로 제한)
-  const fetchLogs = useCallback(async (id: string) => {
+  // Fetch call_logs and orders — scope depends on mode.
+  // Agency: resolves all store IDs via auth.getUser() + stores table.
+  // Store: uses the storeId prop directly.
+  // (통화 로그 및 주문 조회 — 스코프는 mode에 따라 결정.
+  //  에이전시: auth.getUser() + stores 테이블로 전체 매장 ID 확인.
+  //  매장: storeId prop 직접 사용)
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
-    const { data, error: fetchError } = await getSupabaseClient()
-      .from('call_logs')
-      .select('start_time, duration, sentiment, call_status, cost, customer_phone')
-      .eq('store_id', id)
-      .order('start_time', { ascending: false })
-      .limit(1000);
+    const supabase = getSupabaseClient();
+    let storeIds: string[] = [];
 
-    setAllLogs((data as CallLog[] | null) ?? []);
-    if (fetchError) setError(fetchError.message);
+    if (mode === 'agency') {
+      // Resolve all stores owned by the authenticated user (인증된 사용자 소유 전체 매장 확인)
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setError('Not authenticated.');
+        setLoading(false);
+        return;
+      }
+      const { data: stores, error: storesErr } = await supabase
+        .from('stores')
+        .select('id')
+        .eq('owner_id', user.id);
+      if (storesErr) {
+        setError(storesErr.message);
+        setLoading(false);
+        return;
+      }
+      storeIds = (stores ?? []).map((s: { id: string }) => s.id);
+      if (storeIds.length === 0) {
+        // User has no stores yet — clear data and exit gracefully (매장 없음 — 데이터 초기화 후 종료)
+        setAllLogs([]);
+        setAllOrders([]);
+        setLoading(false);
+        return;
+      }
+    } else {
+      // Store mode — storeId is guaranteed non-null at this call site (매장 모드 — 호출 시 storeId는 non-null 보장)
+      if (!storeId) {
+        setAllLogs([]);
+        setAllOrders([]);
+        setLoading(false);
+        return;
+      }
+      storeIds = [storeId];
+    }
+
+    // Run both queries in parallel to minimize latency (지연 최소화를 위해 두 쿼리를 병렬 실행)
+    const [logsResult, ordersResult] = await Promise.all([
+      supabase
+        .from('call_logs')
+        .select('call_id, start_time, duration, sentiment, call_status, cost, customer_phone')
+        .in('store_id', storeIds)
+        .order('start_time', { ascending: false })
+        .limit(1000),
+      supabase
+        .from('orders')
+        .select('created_at, total_amount')
+        .in('store_id', storeIds)
+        .order('created_at', { ascending: false })
+        .limit(1000),
+    ]);
+
+    setAllLogs((logsResult.data  as CallLog[] | null) ?? []);
+    setAllOrders((ordersResult.data as Order[] | null) ?? []);
+    if (logsResult.error)   setError(logsResult.error.message);
+    if (ordersResult.error) setError((e) => e ?? ordersResult.error!.message);
     setLoading(false);
-  }, []);
+  }, [mode, storeId]);
 
-  // Re-fetch whenever the active storeId changes (활성 storeId가 변경될 때마다 재조회)
+  // Re-fetch when mode or storeId changes (mode 또는 storeId 변경 시 재조회)
   useEffect(() => {
-    if (storeId) {
-      fetchLogs(storeId);
+    if (mode === 'agency') {
+      fetchData();
+    } else if (storeId) {
+      fetchData();
     } else {
       setAllLogs([]);
+      setAllOrders([]);
     }
-  }, [storeId, fetchLogs]);
+  }, [mode, storeId, fetchData]);
 
-  // ── Derived data — all memos recompute when filteredLogs changes ────────────
+  // ── Derived data ──────────────────────────────────────────────────────────
 
-  // Apply the selected date range boundary to the raw log array (원시 로그 배열에 선택된 날짜 범위 경계 적용)
+  // Apply the selected date range boundary to the raw log array (원시 로그 배열에 날짜 범위 경계 적용)
   const filteredLogs = useMemo(() => {
     const boundary = getDateBoundary(dateRange);
     if (!boundary) return allLogs;
     return allLogs.filter((l) => new Date(l.start_time) >= boundary);
   }, [allLogs, dateRange]);
 
-  // Compute all four KPI values from the filtered data set (필터링된 데이터 세트에서 4개의 KPI 값 모두 계산)
+  // Apply the same date boundary to orders (동일한 날짜 경계를 주문에 적용)
+  const filteredOrders = useMemo(() => {
+    const boundary = getDateBoundary(dateRange);
+    if (!boundary) return allOrders;
+    return allOrders.filter((o) => new Date(o.created_at) >= boundary);
+  }, [allOrders, dateRange]);
+
+  // Compute all 5 KPI values from the filtered data sets (필터링된 데이터 세트에서 5개 KPI 값 모두 계산)
   const kpis = useMemo(() => {
-    const total      = filteredLogs.length;
-    const successful = filteredLogs.filter((l) => l.call_status === 'Successful').length;
-    const totalSecs  = filteredLogs.reduce((acc, l) => acc + (l.duration ?? 0), 0);
+    const total          = filteredLogs.length;
+    const successful     = filteredLogs.filter((l) => l.call_status === 'Successful').length;
+    const totalSecs      = filteredLogs.reduce((acc, l) => acc + (l.duration ?? 0), 0);
     const totalCostCents = filteredLogs.reduce((acc, l) => acc + (l.cost ?? 0), 0);
-    // Convert sum from cents to dollars before formatting — Supabase stores cost in cents (합계를 센트에서 달러로 변환 후 포맷 — Supabase는 비용을 센트 단위로 저장)
+    // Convert sum from cents to dollars before formatting (합계를 센트에서 달러로 변환 후 포맷)
     const totalCostDollars = totalCostCents / 100;
+    const totalRevenueCents = filteredOrders.reduce((acc, o) => acc + (o.total_amount ?? 0), 0);
+    const totalRevenueDollars = totalRevenueCents / 100;
     return {
       totalCalls:  total,
       successRate: total > 0 ? ((successful / total) * 100).toFixed(1) : '0.0',
       timeSaved:   formatTotalDuration(totalSecs),
       totalCost:   formatCost(totalCostDollars),
+      aiRevenue:   formatCost(totalRevenueDollars),
     };
-  }, [filteredLogs]);
+  }, [filteredLogs, filteredOrders]);
 
-  // Aggregate call counts per calendar day for the Area chart x-axis.
-  // Uses the YYYY-MM-DD prefix for deterministic sort, then maps to a display label.
-  // (영역 차트 X축을 위해 달력 일별 통화 건수를 집계.
-  //  정렬을 위해 YYYY-MM-DD 접두사를 사용하고 표시 레이블에 매핑)
-  const volumeData = useMemo(() => {
-    const byDate: Record<string, { dateKey: string; label: string; calls: number }> = {};
+  // Merge daily call counts + revenue into one series for the ComposedChart.
+  // Revenue divides by 100 (cents → dollars) before merging.
+  // (ComposedChart을 위해 일별 통화 건수와 매출을 하나의 계열로 병합.
+  //  매출은 센트→달러 변환 후 병합)
+  const composedData = useMemo(() => {
+    const byDate: Record<string, { dateKey: string; label: string; calls: number; revenue: number }> = {};
+
     filteredLogs.forEach((l) => {
-      const dateKey = l.start_time.slice(0, 10); // YYYY-MM-DD sort key (정렬 키)
-      const label   = new Date(l.start_time).toLocaleDateString('en-US', {
-        month: 'short',
-        day:   'numeric',
-      });
-      if (!byDate[dateKey]) byDate[dateKey] = { dateKey, label, calls: 0 };
+      const dateKey = l.start_time.slice(0, 10);
+      const label   = new Date(l.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      if (!byDate[dateKey]) byDate[dateKey] = { dateKey, label, calls: 0, revenue: 0 };
       byDate[dateKey].calls++;
     });
+
+    filteredOrders.forEach((o) => {
+      const dateKey = o.created_at.slice(0, 10);
+      const label   = new Date(o.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      if (!byDate[dateKey]) byDate[dateKey] = { dateKey, label, calls: 0, revenue: 0 };
+      byDate[dateKey].revenue += (o.total_amount ?? 0);
+    });
+
     return Object.values(byDate)
       .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
-      .map(({ label, calls }) => ({ date: label, calls }));
-  }, [filteredLogs]);
+      .map(({ label, calls, revenue }) => ({
+        date:    label,
+        calls,
+        // Divide revenue from cents to dollars for display (센트→달러 변환)
+        revenue: parseFloat((revenue / 100).toFixed(2)),
+      }));
+  }, [filteredLogs, filteredOrders]);
 
-  // Count calls by status for the Donut chart — filters out zero-value segments.
-  // (도넛 차트를 위해 상태별 통화 건수 집계 — 0 값 세그먼트 필터링)
+  // Count calls by status for the Donut chart (도넛 차트를 위해 상태별 통화 건수 집계)
   const statusData = useMemo(() => {
     const successful   = filteredLogs.filter((l) => l.call_status === 'Successful').length;
     const unsuccessful = filteredLogs.filter((l) => l.call_status === 'Unsuccessful').length;
@@ -328,7 +424,7 @@ export function AnalyticsDashboard({
     ].filter((d) => d.value > 0);
   }, [filteredLogs]);
 
-  // Count calls by sentiment category for the Bar chart (막대 차트를 위해 감정 카테고리별 통화 건수 집계)
+  // Count calls by sentiment category for the BarChart (막대 차트를 위해 감정 카테고리별 건수 집계)
   const sentimentData = useMemo(() => {
     const counts: Record<string, number> = { Positive: 0, Neutral: 0, Negative: 0 };
     filteredLogs.forEach((l) => {
@@ -337,15 +433,60 @@ export function AnalyticsDashboard({
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
   }, [filteredLogs]);
 
+  // Build a 7×14 heatmap matrix [dayOfWeek][hourIndex], Mon-first, hours 9–22.
+  // getDay() returns 0=Sun; (getDay()+6)%7 converts to 0=Mon.
+  // (요일 Mon 기준 7×14 히트맵 행렬 생성 [요일][시간], 시간 범위 9–22.
+  //  getDay()는 0=일을 반환; (getDay()+6)%7로 0=월 변환)
+  const heatmapMatrix = useMemo(() => {
+    const matrix: number[][] = Array.from({ length: 7 }, () => new Array(14).fill(0));
+    filteredLogs.forEach((l) => {
+      const d      = new Date(l.start_time);
+      const dayIdx = (d.getDay() + 6) % 7;   // 0=Mon … 6=Sun
+      const hour   = d.getHours();
+      if (hour >= 9 && hour <= 22) {
+        matrix[dayIdx][hour - 9]++;
+      }
+    });
+    return matrix;
+  }, [filteredLogs]);
+
+  // Max value in the heatmap — used to normalise cell opacity (히트맵 셀 투명도 정규화를 위한 최댓값)
+  const maxHeat = useMemo(
+    () => Math.max(...heatmapMatrix.flat(), 1),
+    [heatmapMatrix],
+  );
+
   // Pick the 5 most recent calls flagged as Negative sentiment or Unsuccessful status.
-  // The fetch is already sorted desc by start_time, so slice(0, 5) gives recency for free.
-  // (감정이 Negative이거나 상태가 Unsuccessful로 표시된 최근 통화 5건 선택.
-  //  조회가 이미 start_time 내림차순으로 정렬되어 있으므로 slice(0, 5)로 최신 순서를 바로 얻음)
+  // (Negative 감정 또는 Unsuccessful 상태로 표시된 최근 통화 5건 선택)
   const needsAttention = useMemo(() => {
     return filteredLogs
       .filter((l) => l.sentiment === 'Negative' || l.call_status === 'Unsuccessful')
       .slice(0, 5);
   }, [filteredLogs]);
+
+  // ── CSV export ─────────────────────────────────────────────────────────────
+
+  // Build a CSV from filteredLogs and trigger a browser download via a synthetic anchor.
+  // (filteredLogs에서 CSV를 생성하고 합성 앵커를 통해 브라우저 다운로드 트리거)
+  function downloadCSV() {
+    const headers = ['Date', 'Customer Phone', 'Status', 'Sentiment', 'Duration (s)', 'Cost ($)'];
+    const rows = filteredLogs.map((l) => [
+      new Date(l.start_time).toLocaleString('en-US'),
+      l.customer_phone ?? '',
+      l.call_status,
+      l.sentiment ?? '',
+      l.duration  ?? '',
+      l.cost != null ? (l.cost / 100).toFixed(4) : '',
+    ]);
+    const csv  = [headers, ...rows].map((r) => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `analytics-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // ── Date range button config ────────────────────────────────────────────────
   const DATE_OPTIONS: { label: string; value: DateRange }[] = [
@@ -355,8 +496,8 @@ export function AnalyticsDashboard({
     { label: 'All',   value: 'all'   },
   ];
 
-  // ── Render — no store linked (렌더링 — 연결된 매장 없음) ──────────────────
-  if (!storeId) {
+  // ── Render — no store linked (store mode only) ─────────────────────────────
+  if (mode === 'store' && !storeId) {
     return (
       <div className="flex flex-col items-center justify-center min-h-64 text-center py-20">
         <Activity className="h-8 w-8 text-slate-700 mb-3" />
@@ -365,7 +506,7 @@ export function AnalyticsDashboard({
     );
   }
 
-  // ── Render — main dashboard (렌더링 — 메인 대시보드) ─────────────────────
+  // ── Render — main dashboard ────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-5">
 
@@ -374,7 +515,9 @@ export function AnalyticsDashboard({
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-slate-100">Analytics</h2>
           <p className="text-sm text-slate-500 mt-0.5">
-            AI voice agent performance overview for the selected period.
+            {mode === 'agency'
+              ? 'Aggregated AI voice agent performance across all your stores.'
+              : 'AI voice agent performance overview for the selected period.'}
           </p>
         </div>
 
@@ -397,9 +540,29 @@ export function AnalyticsDashboard({
             ))}
           </div>
 
-          {/* Refresh button — re-fetches the full log set from Supabase (새로고침 버튼 — Supabase에서 전체 로그 세트 재조회) */}
+          {/* CSV export — downloads filtered call_logs as a CSV file (필터링된 통화 로그를 CSV로 다운로드) */}
           <button
-            onClick={() => fetchLogs(storeId)}
+            onClick={downloadCSV}
+            disabled={loading || filteredLogs.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="h-3.5 w-3.5" />
+            CSV
+          </button>
+
+          {/* PDF export — uses browser print dialog to capture the current page (브라우저 인쇄 대화상자로 현재 페이지 캡처) */}
+          <button
+            onClick={() => window.print()}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            PDF
+          </button>
+
+          {/* Refresh button — re-fetches the full data set from Supabase (Supabase에서 전체 데이터 재조회) */}
+          <button
+            onClick={fetchData}
             disabled={loading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -417,15 +580,15 @@ export function AnalyticsDashboard({
         </div>
       )}
 
-      {/* ── KPI Cards — 4-column responsive grid (KPI 카드 — 4열 반응형 그리드) */}
+      {/* ── KPI Cards — 5-column responsive grid (KPI 카드 — 5열 반응형 그리드) */}
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-28" />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Total Calls — raw count of all calls in the filtered period (필터 기간 내 전체 통화 건수) */}
           <KpiCard
             icon={Phone}
@@ -434,23 +597,23 @@ export function AnalyticsDashboard({
             sub="in the selected period"
             accent="blue"
           />
-          {/* AI Success Rate — percentage of calls with 'Successful' status (상태가 'Successful'인 통화의 비율) */}
+          {/* AI Success Rate — percentage of calls with 'Successful' status (성공 상태 통화 비율) */}
           <KpiCard
             icon={CheckCircle2}
             label="AI Success Rate"
             value={`${kpis.successRate}%`}
-            sub="of calls resolved successfully"
+            sub="resolved successfully"
             accent="emerald"
           />
-          {/* Total Time Handled — sum of all call durations (모든 통화 시간의 합계) */}
+          {/* Total Time Handled — sum of all call durations (전체 통화 시간 합계) */}
           <KpiCard
             icon={Clock}
-            label="Total Time Handled"
+            label="Time Handled"
             value={kpis.timeSaved}
             sub="by the AI voice agent"
             accent="amber"
           />
-          {/* Total AI Cost — sum of Retell usage costs (Retell 사용 비용의 합계) */}
+          {/* Total AI Cost — sum of Retell usage costs; stored in cents, divided by 100 (Retell 사용 비용 합계; 센트 저장 후 100으로 나눔) */}
           <KpiCard
             icon={DollarSign}
             label="Total AI Cost"
@@ -458,10 +621,18 @@ export function AnalyticsDashboard({
             sub="Retell AI usage"
             accent="rose"
           />
+          {/* AI Revenue — sum of order total_amount in cents divided by 100 (주문 total_amount 합계를 100으로 나눈 AI 매출) */}
+          <KpiCard
+            icon={TrendingUp}
+            label="AI Revenue"
+            value={kpis.aiRevenue}
+            sub="from AI-assisted orders"
+            accent="indigo"
+          />
         </div>
       )}
 
-      {/* ── Main charts row: Area + Donut (메인 차트 행: 영역 + 도넛) */}
+      {/* ── ComposedChart + Donut (ComposedChart + 도넛) */}
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Skeleton className="lg:col-span-2 h-80" />
@@ -470,19 +641,23 @@ export function AnalyticsDashboard({
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-          {/* Call Volume Trend — daily call count rendered as an emerald AreaChart.
-              (통화량 추이 — 일별 통화 건수를 에메랄드 영역 차트로 렌더링) */}
-          <ChartCard title="Call Volume Trend" className="lg:col-span-2">
-            {volumeData.length === 0 ? (
+          {/* Call Volume + Revenue Trend — dual-axis ComposedChart.
+              Left Y-axis (emerald Area): daily call count.
+              Right Y-axis (indigo Line): daily revenue in dollars.
+              (이중 Y축 ComposedChart.
+               좌측 Y축(에메랄드 영역): 일별 통화 건수.
+               우측 Y축(인디고 선): 일별 매출 달러) */}
+          <ChartCard title="Call Volume & Revenue Trend" className="lg:col-span-2">
+            {composedData.length === 0 ? (
               <ChartEmpty />
             ) : (
               <ResponsiveContainer width="100%" height={260}>
-                <AreaChart
-                  data={volumeData}
-                  margin={{ top: 4, right: 4, bottom: 0, left: -20 }}
+                <ComposedChart
+                  data={composedData}
+                  margin={{ top: 4, right: 16, bottom: 0, left: -20 }}
                 >
                   <defs>
-                    {/* Vertical emerald-to-transparent gradient for the area fill (영역 채우기를 위한 에메랄드-투명 수직 그라디언트) */}
+                    {/* Emerald gradient fill for the calls area (통화 영역의 에메랄드 그라디언트 채우기) */}
                     <linearGradient id="gradCalls" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%"  stopColor={C_EMERALD} stopOpacity={0.35} />
                       <stop offset="95%" stopColor={C_EMERALD} stopOpacity={0}    />
@@ -496,15 +671,33 @@ export function AnalyticsDashboard({
                     tickLine={false}
                     interval="preserveStartEnd"
                   />
+                  {/* Left Y-axis — call volume (좌측 Y축 — 통화량) */}
                   <YAxis
+                    yAxisId="left"
                     allowDecimals={false}
                     tick={{ fontSize: 10, fill: C_SLATE }}
                     axisLine={false}
                     tickLine={false}
                   />
+                  {/* Right Y-axis — revenue in dollars (우측 Y축 — 매출 달러) */}
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fontSize: 10, fill: C_SLATE }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(v: number) => `$${v}`}
+                  />
                   {/* Cast required: recharts v3 ContentType generic is overly strict (recharts v3 ContentType 제네릭이 과도하게 엄격하여 캐스트 필요) */}
                   <Tooltip content={ChartTooltip as never} />
+                  <Legend
+                    iconType="circle"
+                    iconSize={7}
+                    wrapperStyle={{ paddingTop: '6px' }}
+                    formatter={(v) => <span className="text-xs text-slate-400">{v}</span>}
+                  />
                   <Area
+                    yAxisId="left"
                     type="monotone"
                     dataKey="calls"
                     name="Calls"
@@ -514,7 +707,17 @@ export function AnalyticsDashboard({
                     dot={false}
                     activeDot={{ r: 4, fill: C_EMERALD, strokeWidth: 0 }}
                   />
-                </AreaChart>
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="revenue"
+                    name="Revenue ($)"
+                    stroke={C_INDIGO}
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4, fill: C_INDIGO, strokeWidth: 0 }}
+                  />
+                </ComposedChart>
               </ResponsiveContainer>
             )}
           </ChartCard>
@@ -541,7 +744,7 @@ export function AnalyticsDashboard({
                       <Cell key={i} fill={STATUS_COLORS[i % STATUS_COLORS.length]} />
                     ))}
                   </Pie>
-                  {/* Cast required: recharts v3 ContentType generic is overly strict (recharts v3 ContentType 제네릭이 과도하게 엄격하여 캐스트 필요) */}
+                  {/* Cast required: recharts v3 ContentType generic is overly strict (캐스트 필요) */}
                   <Tooltip
                     content={((props: RechartsTipProps) => {
                       const { active, payload } = props;
@@ -551,7 +754,7 @@ export function AnalyticsDashboard({
                       const pct   = total > 0
                         ? ((Number(entry.value) / total) * 100).toFixed(1)
                         : '0';
-                      // Show name, count, and percentage in the tooltip (툴팁에 이름, 건수, 비율 표시)
+                      // Show name, count, and percentage in the tooltip (툴팁에 이름·건수·비율 표시)
                       const fill = (entry.payload as { fill?: string } | undefined)?.fill ?? C_EMERALD;
                       return (
                         <div className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 shadow-xl text-xs">
@@ -566,9 +769,7 @@ export function AnalyticsDashboard({
                     iconType="circle"
                     iconSize={8}
                     wrapperStyle={{ paddingTop: '8px' }}
-                    formatter={(v) => (
-                      <span className="text-xs text-slate-400">{v}</span>
-                    )}
+                    formatter={(v) => <span className="text-xs text-slate-400">{v}</span>}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -578,8 +779,7 @@ export function AnalyticsDashboard({
         </div>
       )}
 
-      {/* ── Bottom row: Sentiment BarChart + Needs Attention table
-          (하단 행: 감정 막대 차트 + 주의 필요 테이블) */}
+      {/* ── Sentiment BarChart + Needs Attention (감정 막대 차트 + 주의 필요 테이블) */}
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Skeleton className="h-72" />
@@ -613,15 +813,12 @@ export function AnalyticsDashboard({
                     axisLine={false}
                     tickLine={false}
                   />
-                  {/* Cast required: recharts v3 ContentType generic is overly strict (recharts v3 ContentType 제네릭이 과도하게 엄격하여 캐스트 필요) */}
+                  {/* Cast required: recharts v3 ContentType generic is overly strict (캐스트 필요) */}
                   <Tooltip content={ChartTooltip as never} />
                   <Bar dataKey="value" name="Calls" radius={[6, 6, 0, 0]}>
-                    {/* Color each bar by its sentiment category (감정 카테고리별로 각 막대에 색상 적용) */}
+                    {/* Color each bar by its sentiment category (감정 카테고리별 막대 색상 적용) */}
                     {sentimentData.map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={SENTIMENT_COLORS[entry.name] ?? C_SLATE}
-                      />
+                      <Cell key={entry.name} fill={SENTIMENT_COLORS[entry.name] ?? C_SLATE} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -630,7 +827,9 @@ export function AnalyticsDashboard({
           </ChartCard>
 
           {/* Needs Attention — 5 most recent Negative or Unsuccessful calls.
-              (주의 필요 — 최근 Negative 또는 Unsuccessful 통화 5건) */}
+              Clicking a row navigates to Call History filtered by call_id.
+              (주의 필요 — 최근 Negative/Unsuccessful 통화 5건.
+               행 클릭 시 call_id로 필터링된 통화 기록으로 이동) */}
           <ChartCard title="Needs Attention">
             {needsAttention.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-44 gap-2.5">
@@ -646,15 +845,21 @@ export function AnalyticsDashboard({
                     <tr className="text-slate-500 border-b border-slate-800">
                       <th className="text-left pb-2.5 font-medium">Date</th>
                       <th className="text-left pb-2.5 font-medium">Phone</th>
-                      <th className="text-left pb-2.5 font-medium">Duration</th>
                       <th className="text-left pb-2.5 font-medium">Status</th>
+                      <th className="text-left pb-2.5 font-medium">Sentiment</th>
+                      <th className="text-left pb-2.5 font-medium">Dur.</th>
+                      <th className="pb-2.5" />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
                     {needsAttention.map((log, i) => (
+                      // Click navigates to Call History filtered by call_id (클릭 시 call_id로 통화 기록 필터링 페이지 이동)
                       <tr
                         key={i}
-                        className="hover:bg-slate-800/30 transition-colors"
+                        onClick={() =>
+                          router.push(`/${mode}/call-history?call_id=${log.call_id}`)
+                        }
+                        className="hover:bg-slate-800/40 cursor-pointer transition-colors"
                       >
                         <td className="py-2.5 text-slate-400">
                           {new Date(log.start_time).toLocaleDateString('en-US', {
@@ -665,11 +870,8 @@ export function AnalyticsDashboard({
                         <td className="py-2.5 text-slate-300 font-mono">
                           {log.customer_phone ?? '—'}
                         </td>
-                        <td className="py-2.5 text-slate-400 font-mono">
-                          {formatDuration(log.duration)}
-                        </td>
                         <td className="py-2.5">
-                          {/* Color status badge by Successful vs Unsuccessful (성공/실패에 따른 상태 배지 색상 적용) */}
+                          {/* Status badge — color coded by Successful vs Unsuccessful (상태 배지 — 성공/실패 색상 코딩) */}
                           <span
                             className={[
                               'inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset',
@@ -681,20 +883,99 @@ export function AnalyticsDashboard({
                             {log.call_status}
                           </span>
                         </td>
+                        <td className="py-2.5">
+                          {/* Sentiment badge — color coded by category (감정 배지 — 카테고리별 색상 코딩) */}
+                          <span
+                            className="text-[10px] font-medium"
+                            style={{
+                              color: SENTIMENT_COLORS[log.sentiment ?? ''] ?? C_SLATE,
+                            }}
+                          >
+                            {log.sentiment ?? '—'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-slate-400 font-mono">
+                          {formatDuration(log.duration)}
+                        </td>
+                        <td className="py-2.5 text-slate-600">
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                {/* Footnote linking user to Call History for full context (전체 컨텍스트를 위해 통화 기록으로 안내하는 각주) */}
                 <p className="mt-3 text-[10px] text-slate-600 italic leading-relaxed">
-                  Showing the 5 most recent calls flagged as Negative sentiment or Unsuccessful.
-                  View full details in <span className="text-slate-500">Call History</span>.
+                  5 most recent calls flagged as Negative sentiment or Unsuccessful. Click a row to view full details.
                 </p>
               </div>
             )}
           </ChartCard>
 
         </div>
+      )}
+
+      {/* ── Peak Hours Heatmap (피크 시간 히트맵) */}
+      {loading ? (
+        <Skeleton className="h-48" />
+      ) : (
+        <ChartCard title="Peak Call Hours">
+          {filteredLogs.length === 0 ? (
+            <ChartEmpty />
+          ) : (
+            <div className="overflow-x-auto">
+              <div className="min-w-[580px]">
+                {/* Hour header row (시간 헤더 행) */}
+                <div className="flex gap-1 mb-1 pl-10">
+                  {HOUR_LABELS.map((h) => (
+                    <div
+                      key={h}
+                      className="flex-1 text-center text-[9px] text-slate-600 font-medium"
+                    >
+                      {h}
+                    </div>
+                  ))}
+                </div>
+                {/* Day rows — Mon through Sun (요일 행 — 월요일부터 일요일까지) */}
+                {DAY_LABELS.map((day, dayIdx) => (
+                  <div key={day} className="flex items-center gap-1 mb-1">
+                    {/* Day label (요일 레이블) */}
+                    <div className="w-9 shrink-0 text-[10px] text-slate-500 font-medium text-right pr-1.5">
+                      {day}
+                    </div>
+                    {HOUR_LABELS.map((_, hourIdx) => {
+                      const count     = heatmapMatrix[dayIdx][hourIdx];
+                      // Scale intensity 0→1 proportionally to the max cell value (최대 셀 값 기준 강도 0→1 비례 스케일)
+                      const intensity = count / maxHeat;
+                      return (
+                        <div
+                          key={hourIdx}
+                          title={`${day} ${HOUR_LABELS[hourIdx]}: ${count} call${count !== 1 ? 's' : ''}`}
+                          className="flex-1 h-7 rounded"
+                          style={{
+                            backgroundColor: count > 0
+                              ? `rgba(16, 185, 129, ${0.12 + intensity * 0.85})`
+                              : 'rgba(30, 41, 59, 0.6)',
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+                {/* Legend bar (범례 막대) */}
+                <div className="flex items-center gap-2 mt-2 pl-10">
+                  <span className="text-[9px] text-slate-600">Low</span>
+                  <div
+                    className="flex-1 h-1.5 rounded-full"
+                    style={{
+                      background: `linear-gradient(to right, rgba(16,185,129,0.12), rgba(16,185,129,0.97))`,
+                    }}
+                  />
+                  <span className="text-[9px] text-slate-600">High</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </ChartCard>
       )}
 
     </div>

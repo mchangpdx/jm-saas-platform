@@ -5,17 +5,12 @@
 
 'use client';
 
-import { useSessionStore }    from '@/shared/stores/sessionStore';
 import { AnalyticsDashboard } from '@/shared/components/AnalyticsDashboard';
 
 export default function AgencyAnalyticsPage() {
-  // Agency-wide store selection driven by the sidebar dropdown (사이드바 드롭다운으로 설정된 에이전시 전체 매장 선택)
-  const selectedStoreId = useSessionStore((s) => s.selectedStoreId);
-
+  // Agency mode — component resolves all owned stores internally via auth.getUser().
+  // (에이전시 모드 — 컴포넌트가 auth.getUser()로 소유 매장을 내부에서 직접 확인)
   return (
-    <AnalyticsDashboard
-      storeId={selectedStoreId}
-      emptyStateLabel="Select a store from the sidebar to view analytics."
-    />
+    <AnalyticsDashboard mode="agency" />
   );
 }
