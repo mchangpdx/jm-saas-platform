@@ -723,15 +723,15 @@ webhookRouter.post('/retell', (req, res) => {
 
     // ── Step 3: Resolve store_id via the stores table ─────────────────────
 
-    // Query the stores table to map agent_id to our internal store_id.
-    // (agent_id를 매핑하기 위해 stores 테이블을 조회합니다)
+    // Query the stores table using retell_agent_id to resolve our internal store primary key.
+    // (retell_agent_id를 사용하여 stores 테이블을 조회하고 내부 매장 기본 키를 확인합니다)
     let store_id = null;
 
     try {
       const { data: storeRow, error: storeError } = await supabase
         .from('stores')
         .select('id')
-        .eq('agent_id', agent_id)
+        .eq('retell_agent_id', agent_id)
         .maybeSingle();
 
       if (storeError) {
@@ -763,27 +763,29 @@ webhookRouter.post('/retell', (req, res) => {
 
     // ── Step 4: Map fields and upsert into call_logs ──────────────────────
 
-    // Convert start_timestamp from Unix ms to ISO-8601 string for the timestamptz column.
-    // (Unix ms를 timestamptz 컬럼용 ISO-8601 문자열로 변환)
-    const start_timestamp_iso = start_timestamp
+    // Convert start_timestamp from Retell Unix ms to ISO-8601 string for the call_logs.start_time column.
+    // The DB column is named 'start_time', not 'start_timestamp'.
+    // (Retell Unix ms를 call_logs.start_time 컬럼용 ISO-8601 문자열로 변환.
+    //  DB 컬럼명은 'start_timestamp'가 아닌 'start_time'입니다)
+    const start_time = start_timestamp
       ? new Date(start_timestamp).toISOString()
       : null;
 
-    // Build the row to upsert — mirrors the call_logs schema exactly.
-    // transcript_object is stored as JSONB; pass the raw object and Supabase handles serialisation.
-    // (upsert할 행 구성 — call_logs 스키마와 정확히 일치.
-    //  transcript_object는 JSONB로 저장 — 원시 객체를 전달하면 Supabase가 직렬화 처리)
     // Convert duration from Retell's milliseconds to integer seconds for the call_logs.duration column.
     // Math.floor avoids fractional seconds that the integer column would reject.
     // (Retell 밀리초를 call_logs.duration 컬럼의 정수 초로 변환.
     //  정수 컬럼이 거부할 분수 초를 방지하기 위해 Math.floor 사용)
     const duration = duration_ms != null ? Math.floor(duration_ms / 1000) : null;
 
+    // Build the row to upsert — mirrors the call_logs schema exactly.
+    // transcript_object is stored as JSONB; pass the raw object and Supabase handles serialisation.
+    // (upsert할 행 구성 — call_logs 스키마와 정확히 일치.
+    //  transcript_object는 JSONB로 저장 — 원시 객체를 전달하면 Supabase가 직렬화 처리)
     const callLogRow = {
       call_id,
       agent_id,
       store_id,
-      start_timestamp:   start_timestamp_iso,
+      start_time,        // DB column is 'start_time' — mapped from Retell's start_timestamp Unix ms (DB 컬럼명 'start_time' — Retell의 start_timestamp Unix ms에서 매핑)
       duration,          // Integer seconds — call_logs schema uses 'duration', not 'duration_ms' (정수 초 — call_logs 스키마는 'duration_ms'가 아닌 'duration' 사용)
       user_sentiment,
       call_status,
