@@ -1,10 +1,12 @@
 // Retell AI webhook receiver — processes call_analyzed events and stores results in Supabase.
-// Uses the service role key for server-to-server writes with no user session context.
-// (Retell AI 웹훅 수신기 — call_analyzed 이벤트를 처리하고 결과를 Supabase에 저장)
+// Retell sends ALL event types here; non-target events are acknowledged and dropped immediately.
+// Signature verification is omitted — Retell no longer exposes a webhook secret in the dashboard.
+// (Retell AI 웹훅 수신기 — call_analyzed 이벤트를 처리하고 결과를 Supabase에 저장.
+//  Retell이 모든 이벤트 타입을 전송하므로 대상 외 이벤트는 즉시 응답 후 폐기.
+//  Retell 대시보드에서 웹훅 시크릿을 더 이상 제공하지 않아 서명 검증 생략)
 
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac, timingSafeEqual } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Supabase admin client — service role bypasses RLS for trusted server writes.
@@ -46,71 +48,33 @@ interface RetellPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Signature verification — HMAC-SHA256 over the raw request body.
-// Only enforced when RETELL_WEBHOOK_SECRET is set in the environment.
-// (원시 요청 바디에 대한 HMAC-SHA256 서명 검증 — RETELL_WEBHOOK_SECRET 설정 시에만 적용)
-// ---------------------------------------------------------------------------
-async function verifySignature(request: NextRequest, rawBody: string): Promise<boolean> {
-  const secret = process.env.RETELL_WEBHOOK_SECRET;
-
-  // Secret not configured — skip verification and trust all requests.
-  // (시크릿 미설정 — 검증 건너뛰고 모든 요청 신뢰)
-  if (!secret) return true;
-
-  const signature = request.headers.get('x-retell-signature');
-  if (!signature) return false;
-
-  // Compute expected HMAC-SHA256 digest in hex (예상 HMAC-SHA256 다이제스트 hex 계산)
-  const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
-
-  // Timing-safe comparison prevents timing attacks (타이밍 공격 방지를 위한 타이밍 안전 비교)
-  try {
-    return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
-  } catch {
-    // Buffer lengths differ — signature is definitely invalid (버퍼 길이 불일치 — 서명 무효)
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // POST /api/webhooks/retell
 // (POST 핸들러 — Retell 이벤트 수신 및 처리)
 // ---------------------------------------------------------------------------
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // Read raw body once so it can be used for both signature check and JSON parse.
-  // (서명 검증과 JSON 파싱 모두에 사용할 수 있도록 원시 바디를 한 번만 읽음)
-  let rawBody: string;
-  try {
-    rawBody = await request.text();
-  } catch {
-    return NextResponse.json({ error: 'Failed to read request body' }, { status: 400 });
-  }
-
-  // Verify webhook authenticity before doing any work (작업 전 웹훅 진위성 검증)
-  const isValid = await verifySignature(request, rawBody);
-  if (!isValid) {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-  }
-
-  // Parse JSON payload (JSON 페이로드 파싱)
+  // Parse incoming JSON payload — malformed bodies return 200 so Retell does not retry.
+  // (수신 JSON 페이로드 파싱 — 잘못된 바디는 Retell 재시도 방지를 위해 200 반환)
   let payload: RetellPayload;
   try {
-    payload = JSON.parse(rawBody);
+    payload = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    console.warn('[retell-webhook] Failed to parse JSON body — ignoring (JSON 바디 파싱 실패 — 무시)');
+    return NextResponse.json({ received: true, processed: false, reason: 'invalid json' }, { status: 200 });
   }
 
-  // Only process call_analyzed events — acknowledge others with 200 to prevent Retell retries.
-  // (call_analyzed 이벤트만 처리 — 나머지는 Retell 재시도 방지를 위해 200으로 응답)
+  // Ignore events other than call_analyzed — Retell sends all event types to this endpoint.
+  // (call_analyzed 이외의 이벤트는 무시 — Retell이 모든 이벤트 타입을 이 엔드포인트로 전송)
   if (payload.event !== 'call_analyzed') {
     return NextResponse.json({ received: true, processed: false }, { status: 200 });
   }
 
   const { call } = payload;
 
-  // Validate required fields are present (필수 필드 존재 여부 확인)
+  // Validate required fields — missing data is logged and acknowledged without retrying.
+  // (필수 필드 검증 — 누락된 데이터는 로그 후 재시도 없이 응답)
   if (!call?.call_id || !call?.agent_id) {
-    return NextResponse.json({ error: 'Missing required fields: call_id or agent_id' }, { status: 400 });
+    console.warn('[retell-webhook] Missing call_id or agent_id in payload (페이로드에 call_id 또는 agent_id 누락)');
+    return NextResponse.json({ received: true, processed: false, reason: 'missing required fields' }, { status: 200 });
   }
 
   try {
@@ -125,8 +89,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       .maybeSingle();
 
     if (agentError) {
+      // DB read errors are non-critical for Retell — log and return 200 to suppress retries.
+      // (DB 읽기 오류는 Retell에 비중요 — 로그 후 재시도 억제를 위해 200 반환)
       console.error('[retell-webhook] Agent lookup failed (에이전트 조회 실패):', agentError.message);
-      return NextResponse.json({ error: 'Agent lookup failed' }, { status: 500 });
+      return NextResponse.json({ received: true, processed: false, reason: 'agent lookup error' }, { status: 200 });
     }
 
     // agent_id not registered in our system — log and return 200 to stop Retell from retrying.
@@ -172,9 +138,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ received: true, processed: true, call_id: call.call_id }, { status: 200 });
 
   } catch (err) {
-    // Catch-all for unexpected runtime errors (예상치 못한 런타임 오류 캐치)
+    // Catch-all for unexpected runtime errors — return 200 to prevent unnecessary Retell retries.
+    // (예상치 못한 런타임 오류 캐치 — 불필요한 Retell 재시도 방지를 위해 200 반환)
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error('[retell-webhook] Unexpected error (예상치 못한 오류):', message);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ received: true, processed: false, reason: 'internal error' }, { status: 200 });
   }
 }
