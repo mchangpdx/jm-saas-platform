@@ -101,8 +101,8 @@ const STATUS_COLORS = [C_EMERALD, C_ROSE];
 const DAY_LABELS    = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const HOUR_LABELS   = ['9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm','9pm','10pm'];
 
-// Glassmorphism card base class reused on every panel (모든 패널에서 재사용하는 글래스모피즘 카드 기본 클래스)
-const GLASS = 'bg-slate-900/60 backdrop-blur-md border border-slate-800/50 rounded-2xl';
+// Glassmorphism card base class reused on every panel — shadow-xl adds depth, rounded-xl tightens corners (모든 패널에서 재사용하는 글래스모피즘 카드 기본 클래스 — shadow-xl로 깊이 추가, rounded-xl로 모서리 정돈)
+const GLASS = 'bg-slate-900/60 backdrop-blur-md border border-slate-800/50 shadow-xl rounded-xl';
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
@@ -165,7 +165,8 @@ function KpiCard({
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-[11px] text-slate-400 mb-1.5 font-medium uppercase tracking-widest">{label}</p>
-        <p className="text-2xl font-bold text-white leading-none mb-1">{value}</p>
+        {/* KPI value — text-3xl for prominent readability on dark glass cards (다크 글래스 카드에서 눈에 띄는 가독성을 위한 text-3xl 크기) */}
+        <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
         {sub && <p className="text-xs text-slate-500">{sub}</p>}
       </div>
     </div>
@@ -180,7 +181,8 @@ function Panel({ title, children, className }: {
 }) {
   return (
     <div className={`${GLASS} p-6 ${className ?? ''}`}>
-      <p className="text-sm font-semibold text-slate-400 mb-5 uppercase tracking-wider">{title}</p>
+      {/* Panel title — font-medium keeps it lighter than the KPI values for clear hierarchy (KPI 값보다 가볍게 유지하여 명확한 계층 구조를 위한 font-medium) */}
+      <p className="text-sm font-medium text-slate-400 mb-5 uppercase tracking-wider">{title}</p>
       {children}
     </div>
   );
@@ -707,7 +709,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                   <Tooltip content={DarkTip as never} />
                   <Legend iconType="circle" iconSize={7} wrapperStyle={{ paddingTop: '8px' }} formatter={(v) => <span className="text-[11px] text-slate-400">{v}</span>} />
                   <Area yAxisId="left" type="monotone" dataKey="calls" name="Calls" stroke={C_EMERALD} strokeWidth={2} fill="url(#gCalls)" dot={false} activeDot={{ r: 4, fill: C_EMERALD, strokeWidth: 0 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="revenue" name="Revenue ($)" stroke={C_INDIGO} strokeWidth={2} dot={false} activeDot={{ r: 4, fill: C_INDIGO, strokeWidth: 0 }} />
+                  {/* Revenue line — C_BLUE (#3b82f6) distinguishes it clearly from the emerald calls area (에메랄드 통화 영역과 명확히 구별하기 위해 C_BLUE(#3b82f6) 사용) */}
+                  <Line yAxisId="right" type="monotone" dataKey="revenue" name="Revenue ($)" stroke={C_BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4, fill: C_BLUE, strokeWidth: 0 }} />
                 </ComposedChart>
               </ResponsiveContainer>
             )}
@@ -787,8 +790,9 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-800/60">
+                      {/* Table headers — text-slate-400 matches card title brightness for unified tone (카드 제목 밝기와 일치하는 통일된 톤을 위한 text-slate-400) */}
                       {['Date', 'Phone', 'Status', 'Sentiment', 'Dur.', ''].map((h) => (
-                        <th key={h} className="text-left pb-3 font-medium text-slate-500">{h}</th>
+                        <th key={h} className="text-left pb-3 font-medium text-slate-400">{h}</th>
                       ))}
                     </tr>
                   </thead>
