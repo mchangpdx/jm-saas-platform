@@ -696,20 +696,10 @@ webhookRouter.post('/retell', (req, res) => {
     // Retell wraps all call data under the "call" key (Retell은 모든 통화 데이터를 "call" 키 아래에 래핑)
     const call = body.call ?? {};
 
-    const call_id         = call.call_id         ?? null;
-    const agent_id        = call.agent_id         ?? null;
-    const start_timestamp = call.start_timestamp  ?? null; // Unix ms from Retell (Retell의 Unix 밀리초)
-    const duration_ms     = call.duration_ms      ?? null;
-    const user_sentiment  = call.user_sentiment   ?? null;
-    const call_status     = call.call_status      ?? null;
-    const cost            = call.cost             ?? null;
-    const recording_url   = call.recording_url    ?? null;
-
-    // call_analysis sub-object holds the AI-generated summary and transcript.
-    // (call_analysis 하위 객체에 AI 생성 요약 및 트랜스크립트 포함)
-    const call_analysis      = call.call_analysis ?? {};
-    const summary            = call_analysis.call_summary      ?? null;
-    const transcript_object  = call_analysis.transcript_object ?? null; // Passed as JSONB — Supabase serialises automatically (JSONB로 전달 — Supabase가 자동 직렬화)
+    // Pull only the fields needed for early validation — all other mapping happens in Step 4.
+    // (조기 검증에 필요한 필드만 추출 — 나머지 매핑은 Step 4에서 수행)
+    const call_id  = call.call_id  ?? null;
+    const agent_id = call.agent_id ?? null;
 
     // Validate the minimum required fields before touching the database.
     // (데이터베이스 접근 전 최소 필수 필드 검증)
@@ -761,46 +751,62 @@ webhookRouter.post('/retell', (req, res) => {
       );
     }
 
-    // ── Step 4: Map fields and upsert into call_logs ──────────────────────
+    // ── Step 4: Build exact insertPayload and upsert into call_logs ──────────
 
-    // Convert start_timestamp from Retell Unix ms to ISO-8601 string for the call_logs.start_time column.
-    // The DB column is named 'start_time', not 'start_timestamp'.
-    // (Retell Unix ms를 call_logs.start_time 컬럼용 ISO-8601 문자열로 변환.
-    //  DB 컬럼명은 'start_timestamp'가 아닌 'start_time'입니다)
-    const start_time = start_timestamp
-      ? new Date(start_timestamp).toISOString()
-      : null;
+    // Strict 1:1 mapping from Retell payload paths to call_logs column names.
+    // Every key here must match an actual column — wrong names cause schema cache errors.
+    // (Retell 페이로드 경로에서 call_logs 컬럼명으로의 엄격한 1:1 매핑.
+    //  모든 키는 실제 컬럼과 일치해야 함 — 잘못된 이름은 스키마 캐시 오류 발생)
+    const insertPayload = {
+      // Primary identifiers (기본 식별자)
+      call_id:        call.call_id,
+      store_id,                                                                          // Resolved from stores.id via retell_agent_id lookup above (위의 retell_agent_id 조회로 stores.id에서 확인)
+      agent_id:       call.agent_id,
 
-    // Convert duration from Retell's milliseconds to integer seconds for the call_logs.duration column.
-    // Math.floor avoids fractional seconds that the integer column would reject.
-    // (Retell 밀리초를 call_logs.duration 컬럼의 정수 초로 변환.
-    //  정수 컬럼이 거부할 분수 초를 방지하기 위해 Math.floor 사용)
-    const duration = duration_ms != null ? Math.floor(duration_ms / 1000) : null;
+      // Call timing — start_time is the DB column name, not start_timestamp (통화 시간 — DB 컬럼명은 start_timestamp가 아닌 start_time)
+      start_time:     new Date(call.start_timestamp).toISOString(),
 
-    // Build the row to upsert — mirrors the call_logs schema exactly.
-    // transcript_object is stored as JSONB; pass the raw object and Supabase handles serialisation.
-    // (upsert할 행 구성 — call_logs 스키마와 정확히 일치.
-    //  transcript_object는 JSONB로 저장 — 원시 객체를 전달하면 Supabase가 직렬화 처리)
-    const callLogRow = {
-      call_id,
-      agent_id,
-      store_id,
-      start_time,        // DB column is 'start_time' — mapped from Retell's start_timestamp Unix ms (DB 컬럼명 'start_time' — Retell의 start_timestamp Unix ms에서 매핑)
-      duration,          // Integer seconds — call_logs schema uses 'duration', not 'duration_ms' (정수 초 — call_logs 스키마는 'duration_ms'가 아닌 'duration' 사용)
-      user_sentiment,
-      call_status,
-      cost,
-      recording_url,
-      summary,
-      transcript_object, // Stored as JSONB in Supabase — do NOT JSON.stringify before inserting (Supabase에 JSONB로 저장 — 삽입 전 JSON.stringify 금지)
+      // Customer phone number extracted from Retell's from_number field (Retell의 from_number 필드에서 추출한 고객 전화번호)
+      customer_phone: call.from_number || 'Unknown',
+
+      // Duration: prefer ms→seconds conversion, fall back to total_duration_seconds, default 0
+      // (통화 시간: ms→초 변환 우선, total_duration_seconds 폴백, 기본값 0)
+      duration:       Math.floor(call.duration_ms / 1000) || call.total_duration_seconds || 0,
+
+      // Sentiment from call_analysis sub-object — defaults to Neutral when absent
+      // (call_analysis 하위 객체의 감정 — 없을 때 기본값 Neutral)
+      sentiment:      call.call_analysis?.user_sentiment || 'Neutral',
+
+      // Call outcome derived from call_successful boolean flag in call_analysis
+      // (call_analysis의 call_successful 불리언 플래그에서 파생된 통화 결과)
+      call_status:    call.call_analysis?.call_successful ? 'Successful' : 'Unsuccessful',
+
+      // Cost pulled from nested call_cost object — defaults to 0 when absent
+      // (중첩된 call_cost 객체에서 가져온 비용 — 없을 때 기본값 0)
+      cost:           call.call_cost?.combined_cost || 0,
+
+      // Recording URL — empty string when Retell has not produced one yet
+      // (녹음 URL — Retell이 아직 생성하지 않은 경우 빈 문자열)
+      recording_url:  call.recording_url || '',
+
+      // AI-generated summary from call_analysis (call_analysis의 AI 생성 요약)
+      summary:        call.call_analysis?.call_summary || '',
+
+      // Transcript array mapped to the 'transcript' DB column — NOT 'transcript_object'.
+      // Reading directly from call.transcript_object (top-level field Retell populates).
+      // (트랜스크립트 배열을 'transcript_object'가 아닌 'transcript' DB 컬럼에 매핑.
+      //  Retell이 채우는 최상위 필드 call.transcript_object에서 직접 읽음)
+      transcript:     call.transcript_object || [],
     };
 
     try {
       // Upsert on call_id to make this handler idempotent against Retell duplicate deliveries.
-      // (Retell 중복 전송에 대한 멱등성 보장을 위해 call_id 기준 upsert)
+      // No explicit onConflict key needed — Supabase uses the primary key by default.
+      // (Retell 중복 전송에 대한 멱등성 보장을 위해 call_id 기준 upsert.
+      //  명시적 onConflict 키 불필요 — Supabase가 기본 키를 기본으로 사용)
       const { error: insertError } = await supabase
         .from('call_logs')
-        .upsert(callLogRow, { onConflict: 'call_id' });
+        .upsert(insertPayload);
 
       if (insertError) {
         // Log the exact database insertion error for triage in server logs.
