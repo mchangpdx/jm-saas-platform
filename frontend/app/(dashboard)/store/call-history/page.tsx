@@ -1,8 +1,8 @@
-// Agency Call History page — master-detail view of AI voice agent call logs.
+// Store Call History page — master-detail view of AI voice agent call logs for a single store.
 // Fetches from the call_logs table via the browser Supabase client,
-// filtered by the agency's currently selected store.
-// (에이전시 통화 기록 페이지 — AI 음성 에이전트 통화 로그의 마스터-디테일 뷰.
-//  브라우저 Supabase 클라이언트로 call_logs 테이블 조회, 선택된 매장 기준 필터링)
+// filtered by the store's own storeId from session context.
+// (매장 통화 기록 페이지 — 단일 매장의 AI 음성 에이전트 통화 로그 마스터-디테일 뷰.
+//  세션 컨텍스트의 storeId 기준으로 call_logs 테이블 조회)
 
 'use client';
 
@@ -26,7 +26,7 @@ import { useSessionStore }   from '@/shared/stores/sessionStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-// Single turn in a Retell transcript_object array (Retell transcript_object 배열의 단일 턴)
+// Single turn in a Retell transcript array (Retell 트랜스크립트 배열의 단일 턴)
 interface TranscriptTurn {
   role:    'agent' | 'user';
   content: string;
@@ -198,41 +198,53 @@ function CallCard({
   );
 }
 
-// Chat bubble transcript renderer — agent left, user right.
-// (채팅 버블 트랜스크립트 렌더러 — 에이전트 왼쪽, 사용자 오른쪽)
+// Render stylish chat bubbles for User and Agent (사용자와 에이전트를 위한 세련된 채팅 말풍선을 렌더링합니다)
+// Agent messages align left with an emerald glassmorphism style.
+// User messages align right with a blue glassmorphism style for clear visual distinction.
+// (에이전트 메시지는 에메랄드 글래스모피즘 스타일로 왼쪽 정렬.
+//  사용자 메시지는 명확한 시각적 구분을 위해 파란색 글래스모피즘 스타일로 오른쪽 정렬)
 function TranscriptView({ turns }: { turns: TranscriptTurn[] }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {turns.map((turn, i) => {
         const isAgent = turn.role === 'agent';
         return (
           <div
             key={i}
-            className={`flex items-end gap-2 ${isAgent ? 'justify-start' : 'justify-end'}`}
+            className={`flex items-end gap-2.5 ${isAgent ? 'justify-start' : 'justify-end'}`}
           >
-            {/* Agent avatar — left (에이전트 아바타 — 왼쪽) */}
+            {/* Agent avatar — emerald ring on the left (왼쪽 에메랄드 링 에이전트 아바타) */}
             {isAgent && (
-              <div className="h-7 w-7 shrink-0 rounded-full bg-emerald-900/70 flex items-center justify-center">
+              <div className="h-8 w-8 shrink-0 rounded-full bg-emerald-500/20 flex items-center justify-center ring-1 ring-emerald-500/30">
                 <Bot className="h-4 w-4 text-emerald-400" />
               </div>
             )}
 
-            {/* Message bubble (메시지 버블) */}
-            <div
-              className={[
-                'max-w-[75%] rounded-2xl px-3 py-2 text-sm leading-relaxed',
-                isAgent
-                  ? 'bg-slate-700 text-slate-100 rounded-tl-sm'
-                  : 'bg-slate-600 text-slate-100 rounded-tr-sm',
-              ].join(' ')}
-            >
-              {turn.content}
+            {/* Bubble + role label wrapper (말풍선 + 역할 레이블 래퍼) */}
+            <div className={`flex flex-col gap-1 max-w-[75%] ${isAgent ? 'items-start' : 'items-end'}`}>
+
+              {/* Role label — small caption above each bubble for clarity (각 말풍선 위 역할 캡션 — 명확성을 위해) */}
+              <span className="text-[10px] font-medium tracking-wide text-slate-500 px-1">
+                {isAgent ? 'AI Agent' : 'Customer'}
+              </span>
+
+              {isAgent ? (
+                // Agent bubble — dark slate with subtle border and shadow (에이전트 말풍선 — 미묘한 테두리와 그림자가 있는 어두운 슬레이트)
+                <div className="bg-slate-800/80 border border-slate-700/50 text-slate-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm leading-relaxed shadow-md">
+                  {turn.content}
+                </div>
+              ) : (
+                // User bubble — blue glassmorphism for high contrast readability (높은 대비 가독성을 위한 파란색 글래스모피즘 사용자 말풍선)
+                <div className="bg-blue-600/10 border border-blue-500/20 text-blue-50 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed shadow-md">
+                  {turn.content}
+                </div>
+              )}
             </div>
 
-            {/* User avatar — right (사용자 아바타 — 오른쪽) */}
+            {/* User avatar — blue ring on the right (오른쪽 파란색 링 사용자 아바타) */}
             {!isAgent && (
-              <div className="h-7 w-7 shrink-0 rounded-full bg-slate-600 flex items-center justify-center">
-                <User className="h-4 w-4 text-slate-300" />
+              <div className="h-8 w-8 shrink-0 rounded-full bg-blue-500/20 flex items-center justify-center ring-1 ring-blue-500/30">
+                <User className="h-4 w-4 text-blue-400" />
               </div>
             )}
           </div>
@@ -303,6 +315,14 @@ function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
               <p className="text-xs text-slate-500 mb-0.5">Cost</p>
               <p className="text-slate-200">{formatCost(call.cost)}</p>
             </div>
+            {/* Customer phone — store view shows this prominently in the detail card (매장 뷰에서 고객 전화번호를 상세 카드에 강조 표시) */}
+            <div className="col-span-2">
+              <p className="text-xs text-slate-500 mb-0.5">Customer</p>
+              <p className="text-slate-200 flex items-center gap-1.5">
+                <Phone className="h-3.5 w-3.5 text-slate-400" />
+                {call.customer_phone ?? '—'}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -348,9 +368,9 @@ function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
 
 // ── Main page component ───────────────────────────────────────────────────────
 
-export default function CallHistoryPage() {
-  // Agency-wide selected store driven by the sidebar dropdown (사이드바 드롭다운으로 설정된 에이전시 전체 선택 매장)
-  const selectedStoreId = useSessionStore((s) => s.selectedStoreId);
+export default function StoreCallHistoryPage() {
+  // Store's own storeId from session — set by DashboardShell on mount (DashboardShell이 마운트 시 설정하는 매장 고유 storeId)
+  const storeId = useSessionStore((s) => s.storeId);
 
   // ── Data state (데이터 상태) ──────────────────────────────────────────────
   const [allLogs,    setAllLogs   ] = useState<CallLog[]>([]);
@@ -373,29 +393,29 @@ export default function CallHistoryPage() {
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  // Load call logs for the given store, resetting selection and errors.
-  // (매장의 통화 로그 조회 — 선택 항목과 오류 초기화)
-  const loadLogs = useCallback(async (storeId: string) => {
+  // Load call logs for this store, resetting selection and errors.
+  // (이 매장의 통화 로그 조회 — 선택 항목과 오류 초기화)
+  const loadLogs = useCallback(async (id: string) => {
     setLoading(true);
     setFetchError(null);
     setSelected(null);
     setShowDetail(false);
 
-    const { data, error } = await fetchCallLogs(storeId);
+    const { data, error } = await fetchCallLogs(id);
     setAllLogs(data ?? []);
     if (error) setFetchError(error);
     setLoading(false);
   }, []);
 
-  // Re-fetch whenever the agency switches stores (에이전시가 매장 전환 시 재조회)
+  // Fetch on mount and whenever storeId changes (마운트 및 storeId 변경 시 조회)
   useEffect(() => {
-    if (selectedStoreId) {
-      loadLogs(selectedStoreId);
+    if (storeId) {
+      loadLogs(storeId);
     } else {
       setAllLogs([]);
       setSelected(null);
     }
-  }, [selectedStoreId, loadLogs]);
+  }, [storeId, loadLogs]);
 
   // ── Derived filter boundaries ─────────────────────────────────────────────
 
@@ -486,21 +506,21 @@ export default function CallHistoryPage() {
       <div className="px-1 pb-4 shrink-0">
         <h2 className="text-2xl font-bold tracking-tight text-slate-100">Call History</h2>
         <p className="mt-0.5 text-sm text-slate-500">
-          Review AI voice agent call logs, recordings, and transcripts for the selected store.
+          Review AI voice agent call logs, recordings, and transcripts for your store.
         </p>
       </div>
 
-      {/* ── Empty state — no store selected (빈 상태 — 매장 미선택) */}
-      {!selectedStoreId && (
+      {/* ── Empty state — no store linked to session (빈 상태 — 세션에 연결된 매장 없음) */}
+      {!storeId && (
         <div className="flex flex-col items-center justify-center flex-1 py-20 text-center">
           <Mic className="mb-3 h-8 w-8 text-slate-700" />
           <p className="text-sm font-medium text-slate-500">
-            Select a store from the sidebar to view call history.
+            No store linked to your account yet.
           </p>
         </div>
       )}
 
-      {selectedStoreId && (
+      {storeId && (
         <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
 
           {/* ── Filter bar (필터 바) ─────────────────────────────────────── */}
