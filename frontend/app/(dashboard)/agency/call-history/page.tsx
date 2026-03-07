@@ -39,7 +39,7 @@ interface CallLog {
   agent_id:          string;
   store_id:          string;
   start_time:   string;        // ISO-8601 timestamptz (ISO-8601 타임스탬프)
-  duration_ms:       number | null;
+  duration:       number | null;
   user_sentiment:    string | null; // "Positive" | "Neutral" | "Negative" | null (Retell 값)
   call_status:       string;
   cost:              number | null;
@@ -114,7 +114,7 @@ async function fetchCallLogs(
   const { data, error } = await getSupabaseClient()
     .from('call_logs')
     .select(
-      'call_id, agent_id, store_id, start_time, duration_ms, ' +
+      'call_id, agent_id, store_id, start_time, duration, ' +
       'user_sentiment, call_status, cost, recording_url, summary, transcript_object',
     )
     .eq('store_id', storeId)
@@ -182,7 +182,7 @@ function CallCard({
       <div className="flex items-center justify-between text-xs text-slate-400">
         <span className="flex items-center gap-1">
           <Clock className="h-3 w-3" />
-          {formatDuration(call.duration_ms)}
+          {formatDuration(call.duration)}
         </span>
         <span className="flex items-center gap-1">
           <DollarSign className="h-3 w-3" />
@@ -285,7 +285,7 @@ function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
             </div>
             <div>
               <p className="text-xs text-slate-500 mb-0.5">Duration</p>
-              <p className="text-slate-200 font-mono">{formatDuration(call.duration_ms)}</p>
+              <p className="text-slate-200 font-mono">{formatDuration(call.duration)}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500 mb-0.5">Status</p>
