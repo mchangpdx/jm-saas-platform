@@ -216,8 +216,20 @@ async function fetchRetellPage(paginationKey = null) {
   // Guard for both formats so the script survives any future Retell API changes.
   // (응답 형태 정규화: Retell v2는 { calls: [] }가 아닌 일반 배열을 반환.
   //  향후 Retell API 변경에도 스크립트가 동작하도록 두 형태 모두 처리)
-  const calls       = Array.isArray(raw) ? raw            : (raw.calls          ?? []);
-  const nextCursor  = Array.isArray(raw) ? null           : (raw.pagination_key ?? null);
+  const calls = Array.isArray(raw) ? raw : (raw.calls ?? []);
+
+  // Determine the next pagination cursor based on the response shape.
+  // Object response: Retell includes an explicit pagination_key field at the top level.
+  // Array response: Retell uses cursor-based pagination — the last call's call_id IS the
+  //   cursor for the next page. Pass it as pagination_key to fetch the next (older) batch.
+  //   When the array is empty there are no more pages, so return null to stop the loop.
+  // (다음 페이지네이션 커서를 응답 형태에 따라 결정.
+  //  객체 응답: Retell이 최상위 필드에 명시적 pagination_key를 포함.
+  //  배열 응답: Retell은 커서 기반 페이지네이션 사용 — 마지막 통화의 call_id가 다음 페이지 커서.
+  //  배열이 비어 있으면 더 이상 페이지가 없으므로 null을 반환하여 루프 종료)
+  const nextCursor = Array.isArray(raw)
+    ? (calls.length > 0 ? calls[calls.length - 1].call_id : null)
+    : (raw.pagination_key ?? null);
 
   // Log the raw response type on the very first page to aid debugging.
   // (첫 번째 페이지에서 원시 응답 유형을 로그에 출력하여 디버깅 지원)
@@ -364,9 +376,12 @@ async function main() {
     paginationKey = nextCursor;
 
     if (paginationKey) {
-      // Brief pause between Retell API pages to avoid hitting rate limits.
-      // (속도 제한 방지를 위한 Retell API 페이지 간 짧은 일시 정지)
-      await sleep(100);
+      // 1-second delay between Retell API pages to stay well within rate limits.
+      // The cursor for the next page is the last call_id from the current batch.
+      // (속도 제한을 충분히 준수하기 위해 Retell API 페이지 간 1초 지연.
+      //  다음 페이지 커서는 현재 배치의 마지막 call_id)
+      console.log(`[page ${pageNum}] Pausing 1s before next page... (cursor: ${paginationKey.slice(0, 20)}…) (다음 페이지 전 1초 대기 중)`);
+      await sleep(1000);
     }
   } while (paginationKey);
 

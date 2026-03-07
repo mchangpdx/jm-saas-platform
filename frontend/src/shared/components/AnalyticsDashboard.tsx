@@ -620,12 +620,14 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
 
       {/* ── Error banner (오류 배너) */}
       {error && (
-        {/* Error banner — light red tones consistent with light theme (라이트 테마와 일관된 연한 빨간색 톤) */}
-        <div className="flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {error}
-        </div>
-      )}
+        <>
+    {/* Error banner - light red tones consistent with light theme (라이트 테마와 일관된 연한 빨간색 톤) */}
+    <div className="flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+      <AlertTriangle className="h-4 w-4 shrink-0" />
+      {error}
+    </div>
+      </>
+    )}
 
       {/* ── 5 KPI cards (5개 KPI 카드) */}
       {loading ? (
