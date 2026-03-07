@@ -1,26 +1,27 @@
 // Agency overview page — landing page after login for agency-role users.
-// Shows full aggregated analytics via AnalyticsDashboard in agency mode.
-// When a store is selected in the sidebar, AnalyticsDashboard isolates to that store.
-// Module shortcuts are rendered below the dashboard for quick navigation.
-// (에이전시 개요 페이지 — 에이전시 역할 사용자 로그인 후 랜딩 페이지.
-//  에이전시 모드의 AnalyticsDashboard로 전체 집계 분석을 표시.
-//  사이드바에서 매장 선택 시 해당 매장 데이터만 격리. 하단에 모듈 바로가기 렌더링)
+// Uses useStoreContext() (NOT useSessionStore) to read agentId synchronously on first render.
+// Zustand's persisted store hydrates asynchronously from sessionStorage, causing an infinite
+// loading state when agentId is read from it on mount. StoreContext is populated synchronously
+// by DashboardShell from server-resolved props, guaranteeing agentId is available immediately.
+// (에이전시 개요 페이지 — useStoreContext()로 agentId를 첫 렌더에서 동기적으로 읽음.
+//  Zustand는 sessionStorage에서 비동기 수화되어 무한 로딩 상태를 유발하므로 사용 금지.
+//  StoreContext는 DashboardShell이 서버 props에서 동기적으로 채워 즉시 사용 가능)
 
 'use client';
 
 import Link                        from 'next/link';
 import { Mic, CalendarCheck }      from 'lucide-react';
-import { useSessionStore }         from '@/shared/stores/sessionStore';
+import { useStoreContext }         from '@/shared/contexts/StoreContext';
 import { AnalyticsDashboard }      from '@/shared/components/AnalyticsDashboard';
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AgencyOverviewPage() {
-  // agentId is the agency's ID — used as the `id` prop for AnalyticsDashboard in agency mode.
-  // AnalyticsDashboard queries stores WHERE agency_id = agentId to aggregate all stores.
-  // (agentId는 에이전시의 ID — agency 모드 AnalyticsDashboard의 `id` prop으로 사용.
-  //  AnalyticsDashboard는 agency_id = agentId인 매장을 조회하여 전체 집계)
-  const agentId = useSessionStore((s) => s.agentId);
+  // Read agentId from StoreContext — synchronous, no hydration delay, no loading state needed.
+  // agentId is the agency's identifier used by AnalyticsDashboard to query stores WHERE agency_id = agentId.
+  // (StoreContext에서 agentId 읽기 — 동기적, 수화 지연 없음, 로딩 상태 불필요.
+  //  agentId는 AnalyticsDashboard가 agency_id = agentId인 매장을 조회하는 데 사용하는 에이전시 식별자)
+  const { agentId } = useStoreContext();
 
   return (
     <div className="space-y-8">
@@ -31,18 +32,26 @@ export default function AgencyOverviewPage() {
           Agency Overall Performance
         </h2>
         <p className="mt-1 text-sm text-gray-500">
-          에이전시 전체 통합 통계 — aggregated across all stores. Select a store in the sidebar to filter.
+          Aggregated across all stores. Select a specific store in the sidebar to filter.
         </p>
       </div>
 
-      {/* Full analytics dashboard — agency mode aggregates all stores for this agency.
-          When selectedStoreId is set in Zustand, AnalyticsDashboard scopes to that store only.
-          (전체 분석 대시보드 — agency 모드로 이 에이전시의 모든 매장 데이터를 집계.
-           Zustand에 selectedStoreId가 설정되면 해당 매장 데이터만 표시) */}
+      {/* Full analytics dashboard in agency mode — aggregates all stores when no store is selected,
+          or scopes to the selected store when the sidebar dropdown is active.
+          agentId is always a non-empty string here because StoreContext is synchronously provided.
+          (에이전시 모드 전체 분석 대시보드 — 매장 미선택 시 전체 집계,
+           사이드바 드롭다운 활성 시 선택 매장만 표시. StoreContext 동기 제공으로 agentId는 항상 비어있지 않음) */}
       {agentId ? (
         <AnalyticsDashboard mode="agency" id={agentId} />
       ) : (
-        <p className="text-sm text-gray-400">Loading agency context…</p>
+        // Fallback for the rare case where agentId is an empty string (agency account not fully configured).
+        // This is a configuration error, not a loading state — AnalyticsDashboard would query nothing useful.
+        // (agentId가 빈 문자열인 드문 경우의 폴백 — 에이전시 계정 미설정 오류, 로딩 상태 아님)
+        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-sm text-gray-500">
+            No agency account linked. Please contact support to configure your agency profile.
+          </p>
+        </div>
       )}
 
       {/* Module shortcuts — quick navigation to key agency modules (주요 에이전시 모듈로의 빠른 내비게이션) */}
