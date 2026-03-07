@@ -7,6 +7,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams }                           from 'next/navigation';
 import {
   Search,
   Phone,
@@ -364,6 +365,10 @@ export default function CallHistoryPage() {
   // Agency-wide selected store driven by the sidebar dropdown (사이드바 드롭다운으로 설정된 에이전시 전체 선택 매장)
   const selectedStoreId = useSessionStore((s) => s.selectedStoreId);
 
+  // Read call_id from URL query params — set by AnalyticsDashboard "Needs Attention" row clicks (AnalyticsDashboard "Needs Attention" 행 클릭으로 설정되는 URL 쿼리 파라미터에서 call_id 읽기)
+  const searchParams  = useSearchParams();
+  const callIdFromUrl = searchParams.get('call_id');
+
   // ── Data state (데이터 상태) ──────────────────────────────────────────────
   const [allLogs,    setAllLogs   ] = useState<CallLog[]>([]);
   const [loading,    setLoading   ] = useState(false);
@@ -408,6 +413,23 @@ export default function CallHistoryPage() {
       setSelected(null);
     }
   }, [selectedStoreId, loadLogs]);
+
+  // Auto-select the call matching the URL ?call_id param once logs are loaded.
+  // Runs after loadLogs populates allLogs — loadLogs resets selected to null so
+  // this effect reliably fires on every deep-link navigation from AnalyticsDashboard.
+  // (URL ?call_id 파라미터와 일치하는 통화를 로그 로드 후 자동 선택.
+  //  loadLogs가 allLogs를 채운 뒤 실행 — loadLogs가 selected를 null로 초기화하므로
+  //  AnalyticsDashboard의 딥링크 네비게이션마다 안정적으로 실행됨)
+  useEffect(() => {
+    if (callIdFromUrl && allLogs.length > 0 && !selected) {
+      // Find the call matching the URL param — undefined if not in current page of data (URL 파라미터와 일치하는 통화 탐색 — 현재 데이터 페이지에 없으면 undefined)
+      const matchingCall = allLogs.find((c) => c.call_id === callIdFromUrl);
+      if (matchingCall) {
+        setSelected(matchingCall);
+        setShowDetail(true); // also open detail pane on mobile (모바일에서도 상세 패널 열기)
+      }
+    }
+  }, [callIdFromUrl, allLogs, selected]);
 
   // ── Derived filter boundaries ─────────────────────────────────────────────
 
