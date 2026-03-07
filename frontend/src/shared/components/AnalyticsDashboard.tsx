@@ -217,16 +217,16 @@ export function AnalyticsDashboard({
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
-  // Fetch call_logs and orders concurrently — scope determined by mode.
+  // Fetch call_logs and orders concurrently with server-side date filtering.
+  // Date boundaries are applied in the Supabase query (not client-side) so that switching
+  // the period selector always re-fetches and the KPIs update correctly.
   // Agency: resolves storeIds via auth.getUser() + stores table lookup.
   // Store: uses storeId prop directly.
-  // Both tables filtered only by store scope here; date filtering is applied client-side
-  // so the user can switch date ranges without a round-trip.
-  // (call_logs와 orders를 동시에 조회 — 스코프는 mode로 결정.
+  // (서버 사이드 날짜 필터링으로 call_logs와 orders를 동시에 조회.
+  //  날짜 경계를 Supabase 쿼리에서 적용(클라이언트가 아님)하므로
+  //  기간 선택기를 전환하면 항상 재조회되어 KPI가 올바르게 업데이트됨.
   //  에이전시: auth.getUser() + stores 테이블 조회로 storeIds 확인.
-  //  매장: storeId prop 직접 사용.
-  //  두 테이블 모두 여기서는 매장 스코프로만 필터링; 날짜 필터링은 클라이언트에서 적용해
-  //  사용자가 왕복 없이 날짜 범위를 전환할 수 있음)
+  //  매장: storeId prop 직접 사용)
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -270,34 +270,51 @@ export function AnalyticsDashboard({
       storeIds = [storeId];
     }
 
-    // Fetch both tables in parallel to minimise total wait time (총 대기 시간 최소화를 위해 두 테이블을 병렬 조회)
-    const [logsResult, ordersResult] = await Promise.all([
-      // call_logs — fetch all KPI-relevant fields plus UI-only fields (KPI 관련 필드와 UI 전용 필드 모두 조회)
-      supabase
-        .from('call_logs')
-        .select('call_id, start_time, duration, sentiment, call_status, cost, customer_phone')
-        .in('store_id', storeIds)
-        .order('start_time', { ascending: false })
-        .limit(1000),
+    // Compute server-side date boundaries from the selected period using the shared utility (공유 유틸리티를 사용하여 선택된 기간에서 서버 사이드 날짜 경계 계산)
+    const boundary = getDateBoundary(dateRange);
+    const startIso = boundary ? boundary.toISOString() : null;
+    // Upper bound is always the current moment — prevents any future-dated rows leaking in (상한은 항상 현재 시각 — 미래 날짜 행이 포함되는 것을 방지)
+    const endIso   = new Date().toISOString();
 
-      // orders — fetch only fields needed for KPI calculation and daily chart grouping (KPI 계산 및 일별 차트 그룹화에 필요한 필드만 조회)
-      supabase
-        .from('orders')
-        .select('created_at, total_amount')
-        .in('store_id', storeIds)
-        .order('created_at', { ascending: false })
-        .limit(1000),
-    ]);
+    // Build the call_logs query — apply start_time bounds when a date range is active (날짜 범위가 활성화된 경우 start_time 경계를 적용하는 call_logs 쿼리 구성)
+    let logsQuery = supabase
+      .from('call_logs')
+      .select('call_id, start_time, duration, sentiment, call_status, cost, customer_phone')
+      .in('store_id', storeIds)
+      .order('start_time', { ascending: false })
+      .limit(1000);
+    if (startIso) {
+      // Filter call_logs by start_time so the date selector actually changes KPI values (날짜 선택기가 KPI 값을 실제로 변경하도록 start_time으로 call_logs 필터링)
+      logsQuery = logsQuery.gte('start_time', startIso).lte('start_time', endIso);
+    }
+
+    // Build the orders query — restrict to paid orders only and apply the same date window (결제 완료 주문만으로 제한하고 동일한 날짜 창을 적용하는 orders 쿼리 구성)
+    let ordersQuery = supabase
+      .from('orders')
+      .select('created_at, total_amount')
+      .in('store_id', storeIds)
+      // Fetch only paid orders — unpaid/pending orders must never be included in AI Revenue (결제 완료 주문만 조회 — 미결제/대기 주문은 AI 매출에 포함되어선 안 됨)
+      .eq('status', 'paid')
+      .order('created_at', { ascending: false })
+      .limit(1000);
+    if (startIso) {
+      // Apply created_at bounds in sync with the call_logs date filter (call_logs 날짜 필터와 동기화하여 created_at 경계 적용)
+      ordersQuery = ordersQuery.gte('created_at', startIso).lte('created_at', endIso);
+    }
+
+    // Fetch both queries in parallel to minimise total wait time (총 대기 시간 최소화를 위해 두 쿼리를 병렬 실행)
+    const [logsResult, ordersResult] = await Promise.all([logsQuery, ordersQuery]);
 
     setAllLogs((logsResult.data   as CallLog[] | null) ?? []);
     setAllOrders((ordersResult.data as Order[]  | null) ?? []);
 
-    // Surface the first error encountered — second error appended only if first is absent (첫 번째 오류를 노출 — 첫 번째 오류가 없을 때만 두 번째 오류 추가)
+    // Surface the first error encountered — second surfaced only if first is absent (첫 번째 오류를 노출 — 첫 번째 오류가 없을 때만 두 번째 오류 노출)
     if (logsResult.error)   setError(logsResult.error.message);
     if (ordersResult.error) setError((prev) => prev ?? ordersResult.error!.message);
 
     setLoading(false);
-  }, [mode, storeId]);
+  // dateRange added to deps — changing the period triggers a re-fetch with new server-side bounds (dateRange를 의존성에 추가 — 기간 변경 시 새로운 서버 사이드 경계로 재조회 트리거)
+  }, [mode, storeId, dateRange]);
 
   // Re-fetch whenever mode or storeId changes (mode 또는 storeId 변경 시 재조회)
   useEffect(() => {
@@ -312,24 +329,14 @@ export function AnalyticsDashboard({
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
-  // Apply the selected date boundary to call_logs using start_time — same boundary as orders below.
-  // getDateBoundary() is imported from analyticsCalc.ts to guarantee alignment.
-  // (analyticsCalc.ts에서 가져온 getDateBoundary()로 정렬 보장.
-  //  start_time으로 call_logs에 선택된 날짜 경계 적용 — 아래 orders와 동일한 경계)
-  const filteredLogs = useMemo(() => {
-    const boundary = getDateBoundary(dateRange);
-    if (!boundary) return allLogs;
-    return allLogs.filter((l) => new Date(l.start_time) >= boundary);
-  }, [allLogs, dateRange]);
-
-  // Apply the same date boundary to orders using created_at — MUST use getDateBoundary() to stay in sync.
-  // (동기화 유지를 위해 getDateBoundary()를 사용해야 함.
-  //  created_at으로 orders에 동일한 날짜 경계 적용)
-  const filteredOrders = useMemo(() => {
-    const boundary = getDateBoundary(dateRange);
-    if (!boundary) return allOrders;
-    return allOrders.filter((o) => new Date(o.created_at) >= boundary);
-  }, [allOrders, dateRange]);
+  // Server-side date filtering is applied inside fetchData — allLogs and allOrders already
+  // contain only rows within the selected period. These aliases preserve all downstream
+  // references (kpis, composedData, statusData, etc.) without touching any other logic.
+  // (서버 사이드 날짜 필터링이 fetchData 내부에서 적용됨 — allLogs와 allOrders는 이미
+  //  선택된 기간의 행만 포함. 이 별칭은 다른 로직을 변경하지 않고 모든 다운스트림
+  //  참조(kpis, composedData, statusData 등)를 유지)
+  const filteredLogs   = allLogs;
+  const filteredOrders = allOrders;
 
   // Compute all 5 KPIs by delegating entirely to calcKpis() — no inline calculation here.
   // This guarantees CallStatsWidget and AnalyticsDashboard always produce identical numbers.
