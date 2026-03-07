@@ -85,7 +85,6 @@ interface Order extends KpiOrder {
 // ── Design tokens ──────────────────────────────────────────────────────────────
 // Centralised palette keeps every chart and badge colour consistent (모든 차트와 배지 색상의 일관성을 유지하는 중앙화된 팔레트)
 const C_EMERALD  = '#10b981';
-const C_INDIGO   = '#6366f1';
 const C_ROSE     = '#f43f5e';
 const C_AMBER    = '#f59e0b';
 const C_BLUE     = '#3b82f6';
@@ -103,16 +102,6 @@ const HOUR_LABELS   = ['9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm',
 
 // Light theme card base class reused on every panel — white bg, subtle gray border, soft shadow (모든 패널에서 재사용하는 라이트 테마 카드 기본 클래스 — 흰색 배경, 연한 회색 테두리, 부드러운 그림자)
 const GLASS = 'bg-white border border-gray-200 shadow-sm rounded-xl';
-
-// ── Pure helpers ───────────────────────────────────────────────────────────────
-
-// Format a single call's seconds as MM:SS for the Needs Attention table (Needs Attention 테이블을 위해 단일 통화 초를 MM:SS로 포맷)
-function fmtMmSs(seconds: number | null): string {
-  if (seconds == null) return '—';
-  const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
-  const ss = (seconds % 60).toString().padStart(2, '0');
-  return `${mm}:${ss}`;
-}
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -314,16 +303,16 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
     }
 
     // [X-Ray] Log the first 3 call_log rows so we can verify start_time values against the filter (필터 대비 start_time 값을 확인하기 위해 call_log의 첫 3행을 로그에 출력)
-    console.log('[X-Ray] call_logs sample (first 3):', (logsRes.data ?? []).slice(0, 3).map((r) => ({
-      call_id:    (r as { call_id?: string }).call_id,
-      start_time: (r as { start_time?: string }).start_time,
-      status:     (r as { call_status?: string }).call_status,
+    console.log('[X-Ray] call_logs sample (first 3):', (logsRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
+      call_id:    r.call_id    as string | undefined,
+      start_time: r.start_time as string | undefined,
+      status:     r.call_status as string | undefined,
     })));
 
     // [X-Ray] Log the first 3 order rows so we can verify created_at and total_amount values (created_at과 total_amount 값을 확인하기 위해 order의 첫 3행을 로그에 출력)
-    console.log('[X-Ray] orders sample (first 3):', (ordersRes.data ?? []).slice(0, 3).map((r) => ({
-      created_at:   (r as { created_at?: string }).created_at,
-      total_amount: (r as { total_amount?: number }).total_amount,
+    console.log('[X-Ray] orders sample (first 3):', (ordersRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
+      created_at:   r.created_at   as string | undefined,
+      total_amount: r.total_amount as number | undefined,
     })));
 
     setLogs((logsRes.data     as CallLog[] | null) ?? []);
@@ -805,37 +794,46 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
                       ))}
                     </tr>
                   </thead>
-                  {/* Table body — light gray dividers between rows (행 사이의 연한 회색 구분선) */}
-                  <tbody className="divide-y divide-gray-100">
+                  {/* Table body — each row routes to Call History on click (각 행이 클릭 시 통화 기록으로 이동) */}
+                  <tbody>
                     {flagged.map((log, i) => (
-                      // Row click navigates to Call History filtered by call_id (행 클릭으로 call_id로 필터링된 통화 기록으로 이동)
                       <tr
                         key={i}
+                        // Route to specific call details on click (클릭 시 특정 통화 상세 내역으로 이동)
                         onClick={() => router.push(`/${mode}/call-history?call_id=${log.call_id}`)}
-                        className="hover:bg-gray-50 cursor-pointer transition-colors"
+                        className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
                       >
-                        <td className="py-3 text-gray-500">
+                        {/* Date cell — local short format "MMM D" (로컬 짧은 형식 "MMM D"의 날짜 셀) */}
+                        <td className="py-3 px-4 text-sm text-gray-500">
                           {new Date(log.start_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                         </td>
-                        <td className="py-3 text-gray-700 font-mono">{log.customer_phone ?? '—'}</td>
-                        <td className="py-3">
-                          {/* Status badge — light bg with colored text for light theme readability (라이트 테마 가독성을 위한 연한 배경과 색상 텍스트 상태 배지) */}
-                          <span className={[
-                            'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset',
+                        {/* Phone cell — fallback to "Unknown" when absent (없을 때 "Unknown"으로 폴백하는 전화번호 셀) */}
+                        <td className="py-3 px-4 text-sm text-gray-900 font-medium">
+                          {log.customer_phone ?? 'Unknown'}
+                        </td>
+                        {/* Status badge — emerald for Successful, red for Unsuccessful (성공 시 에메랄드, 실패 시 빨간색 상태 배지) */}
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                             log.call_status === 'Successful'
-                              ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                              : 'bg-rose-50    text-rose-700   ring-rose-200',
-                          ].join(' ')}>
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}>
                             {log.call_status}
                           </span>
                         </td>
-                        <td className="py-3">
-                          <span className="text-[11px] font-semibold" style={{ color: SENTIMENT_COLORS[log.sentiment ?? ''] ?? C_AXIS }}>
-                            {log.sentiment ?? '—'}
+                        {/* Sentiment cell — colour driven by SENTIMENT_COLORS map (SENTIMENT_COLORS 맵으로 색상이 결정되는 감정 셀) */}
+                        <td className="py-3 px-4 text-sm" style={{ color: SENTIMENT_COLORS[log.sentiment ?? ''] ?? C_AXIS }}>
+                          {log.sentiment ?? '—'}
+                        </td>
+                        {/* Duration + chevron — MM:SS format with right-aligned navigate arrow (오른쪽 정렬 이동 화살표가 있는 MM:SS 형식의 지속시간) */}
+                        <td className="py-3 px-4 text-sm text-gray-500 text-right">
+                          <span className="inline-flex items-center justify-end gap-1 font-mono">
+                            {log.duration != null
+                              ? `${Math.floor(log.duration / 60)}:${String(log.duration % 60).padStart(2, '0')}`
+                              : '—'}
+                            <ChevronRight className="h-4 w-4 text-gray-400" />
                           </span>
                         </td>
-                        <td className="py-3 text-gray-500 font-mono">{fmtMmSs(log.duration)}</td>
-                        <td className="py-3 text-gray-300"><ChevronRight className="h-3.5 w-3.5" /></td>
                       </tr>
                     ))}
                   </tbody>
