@@ -721,42 +721,42 @@ webhookRouter.post('/retell', (req, res) => {
       return;
     }
 
-    // ── Step 3: Resolve store_id via the agents table ─────────────────────
+    // ── Step 3: Resolve store_id via the stores table ─────────────────────
 
-    // The agents table maps each Retell agent_id to our internal store_id.
-    // This is the same lookup used by the Next.js webhook receiver.
-    // (agents 테이블이 각 Retell agent_id를 내부 store_id에 매핑.
-    //  Next.js 웹훅 수신기와 동일한 조회 방식)
+    // Query the stores table to map agent_id to our internal store_id.
+    // (agent_id를 매핑하기 위해 stores 테이블을 조회합니다)
     let store_id = null;
 
     try {
-      const { data: agentRow, error: agentError } = await supabase
-        .from('agents')
-        .select('store_id')
+      const { data: storeRow, error: storeError } = await supabase
+        .from('stores')
+        .select('id')
         .eq('agent_id', agent_id)
         .maybeSingle();
 
-      if (agentError) {
+      if (storeError) {
         // DB read error — log exact message and continue with null store_id.
         // (DB 읽기 오류 — 정확한 메시지 로그 후 null store_id로 계속)
         console.error(
-          `[RetellWebhook] agents table lookup failed (agents 테이블 조회 실패) | ` +
-          `agent_id: ${agent_id} | error: ${agentError.message}`
+          `[RetellWebhook] stores table lookup failed (stores 테이블 조회 실패) | ` +
+          `agent_id: ${agent_id} | error: ${storeError.message}`
         );
-      } else if (!agentRow) {
-        // agent_id not registered — common with Retell's Test button dummy data.
+      } else if (!storeRow) {
+        // agent_id not registered in stores — common with Retell's Test button dummy data.
         // Log a clear warning and proceed; the call log will be stored with null store_id.
-        // (agent_id 미등록 — Retell 테스트 버튼 더미 데이터에서 자주 발생.
+        // (stores에 등록되지 않은 agent_id — Retell 테스트 버튼 더미 데이터에서 자주 발생.
         //  명확한 경고 로그 후 진행 — 통화 로그는 null store_id로 저장됨)
         console.log(`⚠️ No store found for agent: ${agent_id} — proceeding with null store_id (에이전트에 대한 매장 없음 — null store_id로 진행)`);
       } else {
-        store_id = agentRow.store_id;
+        // Use the store's primary key id as the store_id foreign key in call_logs.
+        // (stores 테이블의 기본 키 id를 call_logs의 store_id 외래 키로 사용)
+        store_id = storeRow.id;
       }
     } catch (lookupErr) {
       // Unexpected exception during lookup — log and continue with null store_id.
       // (조회 중 예기치 않은 예외 — 로그 후 null store_id로 계속)
       console.error(
-        `[RetellWebhook] Unexpected error during agent lookup (에이전트 조회 중 예기치 않은 오류) | ` +
+        `[RetellWebhook] Unexpected error during store lookup (매장 조회 중 예기치 않은 오류) | ` +
         `agent_id: ${agent_id} | ${lookupErr.message}`
       );
     }
@@ -773,12 +773,18 @@ webhookRouter.post('/retell', (req, res) => {
     // transcript_object is stored as JSONB; pass the raw object and Supabase handles serialisation.
     // (upsert할 행 구성 — call_logs 스키마와 정확히 일치.
     //  transcript_object는 JSONB로 저장 — 원시 객체를 전달하면 Supabase가 직렬화 처리)
+    // Convert duration from Retell's milliseconds to integer seconds for the call_logs.duration column.
+    // Math.floor avoids fractional seconds that the integer column would reject.
+    // (Retell 밀리초를 call_logs.duration 컬럼의 정수 초로 변환.
+    //  정수 컬럼이 거부할 분수 초를 방지하기 위해 Math.floor 사용)
+    const duration = duration_ms != null ? Math.floor(duration_ms / 1000) : null;
+
     const callLogRow = {
       call_id,
       agent_id,
       store_id,
       start_timestamp:   start_timestamp_iso,
-      duration_ms,
+      duration,          // Integer seconds — call_logs schema uses 'duration', not 'duration_ms' (정수 초 — call_logs 스키마는 'duration_ms'가 아닌 'duration' 사용)
       user_sentiment,
       call_status,
       cost,
