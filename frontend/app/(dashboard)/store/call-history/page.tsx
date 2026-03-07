@@ -33,19 +33,21 @@ interface TranscriptTurn {
   words?:  unknown[]; // optional word-level timestamps from Retell (Retell 단어 레벨 타임스탬프 — 선택)
 }
 
-// Row shape mirroring the call_logs Supabase table columns (call_logs Supabase 테이블 컬럼 반영 행 형태)
+// Row shape mirroring the exact call_logs Postgres column names — every field must match the DB exactly.
+// (정확한 call_logs Postgres 컬럼명을 반영한 행 형태 — 모든 필드가 DB와 정확히 일치해야 함)
 interface CallLog {
-  call_id:           string;
-  agent_id:          string;
-  store_id:          string;
-  start_time:   string;        // ISO-8601 timestamptz (ISO-8601 타임스탬프)
-  duration:       number | null;
-  user_sentiment:    string | null; // "Positive" | "Neutral" | "Negative" | null (Retell 값)
-  call_status:       string;
-  cost:              number | null;
-  recording_url:     string | null;
-  summary:           string | null;
-  transcript_object: TranscriptTurn[] | null; // JSONB array from Retell (Retell JSONB 배열)
+  call_id:        string;
+  agent_id:       string;
+  store_id:       string;
+  start_time:     string;               // ISO-8601 timestamptz DB column (ISO-8601 타임스탬프 DB 컬럼)
+  customer_phone: string | null;        // Retell from_number mapped to this column (Retell from_number이 이 컬럼에 매핑)
+  duration:       number | null;        // Integer seconds — NOT milliseconds (정수 초 — 밀리초 아님)
+  sentiment:      string | null;        // DB column 'sentiment', NOT 'user_sentiment' (DB 컬럼 'sentiment' — 'user_sentiment' 아님)
+  call_status:    string;
+  cost:           number | null;
+  recording_url:  string | null;
+  summary:        string | null;
+  transcript:     TranscriptTurn[] | null; // DB column 'transcript', NOT 'transcript_object' (DB 컬럼 'transcript' — 'transcript_object' 아님)
 }
 
 // Active date preset selection (활성 날짜 프리셋 선택)
@@ -53,12 +55,14 @@ type DatePreset = 'today' | 'week' | 'month' | 'custom' | null;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-// Format duration from milliseconds to MM:SS display string (밀리초를 MM:SS 표시 문자열로 변환)
-function formatDuration(ms: number | null): string {
-  if (ms == null) return '—';
-  const totalSec = Math.floor(ms / 1000);
-  const mm = Math.floor(totalSec / 60).toString().padStart(2, '0');
-  const ss = (totalSec % 60).toString().padStart(2, '0');
+// Format duration from integer seconds to MM:SS display string.
+// The DB stores seconds directly — no ms→s conversion needed here.
+// (정수 초를 MM:SS 표시 문자열로 변환.
+//  DB는 초를 직접 저장하므로 여기서 ms→s 변환 불필요)
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return '—';
+  const mm = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const ss = (seconds % 60).toString().padStart(2, '0');
   return `${mm}:${ss}`;
 }
 
@@ -105,17 +109,18 @@ const SENTIMENT_STYLES: Record<string, string> = {
 // ── Data layer ────────────────────────────────────────────────────────────────
 
 // Fetch up to 200 call_logs for a store ordered by start_time descending.
-// Client-side filters are applied after fetch to avoid extra round-trips.
+// Column names in select() must match exact Postgres column names — any mismatch causes a schema cache error.
 // (start_time 내림차순으로 매장의 통화 로그 최대 200건 조회.
-//  추가 왕복 방지를 위해 클라이언트에서 필터 적용)
+//  select()의 컬럼명은 정확한 Postgres 컬럼명과 일치해야 함 — 불일치 시 스키마 캐시 오류 발생)
 async function fetchCallLogs(
   storeId: string,
 ): Promise<{ data: CallLog[] | null; error: string | null }> {
   const { data, error } = await getSupabaseClient()
     .from('call_logs')
     .select(
-      'call_id, agent_id, store_id, start_time, duration, ' +
-      'user_sentiment, call_status, cost, recording_url, summary, transcript_object',
+      // Fetch using exact DB column names (정확한 DB 컬럼명을 사용하여 통화 기록을 가져옵니다)
+      'call_id, agent_id, store_id, start_time, customer_phone, duration, ' +
+      'sentiment, call_status, cost, recording_url, summary, transcript',
     )
     .eq('store_id', storeId)
     .order('start_time', { ascending: false })
@@ -168,14 +173,14 @@ function CallCard({
         <span className="text-xs text-slate-400">
           {formatDateTime(call.start_time)}
         </span>
-        <SentimentBadge sentiment={call.user_sentiment} />
+        {/* Use DB column 'sentiment', not 'user_sentiment' (DB 컬럼 'sentiment' 사용 — 'user_sentiment' 아님) */}
+        <SentimentBadge sentiment={call.sentiment} />
       </div>
 
-      {/* Call ID as proxy for customer phone — schema has no phone column
-          (고객 전화번호 대리 call ID — 스키마에 전화번호 컬럼 없음) */}
+      {/* Customer phone from the 'customer_phone' DB column (DB 컬럼 'customer_phone'의 고객 전화번호) */}
       <div className="flex items-center gap-1.5 text-sm font-medium text-slate-200 mb-1.5 min-w-0">
         <Phone className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-        <span className="truncate font-mono text-xs">{call.call_id}</span>
+        <span className="truncate text-xs">{call.customer_phone ?? call.call_id}</span>
       </div>
 
       {/* Duration + cost row (통화 시간 + 비용 행) */}
@@ -240,17 +245,19 @@ function TranscriptView({ turns }: { turns: TranscriptTurn[] }) {
 // Detail pane — shown on the right (desktop) or full screen (mobile).
 // (상세 패널 — 데스크톱 오른쪽 또는 모바일 전체 화면 표시)
 function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
-  // Parse transcript_object — handles both native JSONB array and stringified JSON.
-  // (transcript_object 파싱 — 네이티브 JSONB 배열과 문자열화된 JSON 모두 처리)
+  // Parse the 'transcript' DB column — handles both native JSONB array and stringified JSON.
+  // The DB column is named 'transcript', NOT 'transcript_object'.
+  // (DB 컬럼 'transcript' 파싱 — 네이티브 JSONB 배열과 문자열화된 JSON 모두 처리.
+  //  DB 컬럼명은 'transcript_object'가 아닌 'transcript'입니다)
   const turns = useMemo((): TranscriptTurn[] => {
-    if (!call.transcript_object) return [];
-    if (Array.isArray(call.transcript_object)) return call.transcript_object;
+    if (!call.transcript) return [];
+    if (Array.isArray(call.transcript)) return call.transcript;
     try {
-      return JSON.parse(call.transcript_object as unknown as string) as TranscriptTurn[];
+      return JSON.parse(call.transcript as unknown as string) as TranscriptTurn[];
     } catch {
       return [];
     }
-  }, [call.transcript_object]);
+  }, [call.transcript]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -276,7 +283,8 @@ function DetailView({ call, onBack }: { call: CallLog; onBack: () => void }) {
               <p className="text-xs text-slate-500 mb-0.5">Call ID</p>
               <p className="text-sm font-mono text-slate-200 break-all">{call.call_id}</p>
             </div>
-            <SentimentBadge sentiment={call.user_sentiment} />
+            {/* DB column 'sentiment' — not 'user_sentiment' (DB 컬럼 'sentiment' — 'user_sentiment' 아님) */}
+            <SentimentBadge sentiment={call.sentiment} />
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
             <div>
@@ -412,12 +420,12 @@ export default function CallHistoryPage() {
   // (모든 활성 필터를 클라이언트에서 적용 — 추가 Supabase 왕복 방지)
   const filteredLogs = useMemo(() => {
     return allLogs.filter((c) => {
-      // Search filter — matches call_id (no customer_phone column in call_logs schema)
-      // (검색 필터 — call_id 기준 — call_logs 스키마에 고객 전화번호 컬럼 없음)
-      if (
-        searchQuery &&
-        !c.call_id.toLowerCase().includes(searchQuery.toLowerCase())
-      ) return false;
+      // Search filter — matches customer_phone or falls back to call_id when phone is null.
+      // (검색 필터 — customer_phone 기준, 전화번호가 null이면 call_id로 폴백)
+      if (searchQuery) {
+        const haystack = (c.customer_phone ?? c.call_id).toLowerCase();
+        if (!haystack.includes(searchQuery.toLowerCase())) return false;
+      }
 
       // Date range filter — lower bound (날짜 범위 필터 — 하한)
       if (filterFrom && new Date(c.start_time) < new Date(filterFrom)) return false;
@@ -425,8 +433,8 @@ export default function CallHistoryPage() {
       // Date range filter — upper bound (날짜 범위 필터 — 상한)
       if (filterTo && new Date(c.start_time) > new Date(filterTo)) return false;
 
-      // Sentiment filter — exact match against Retell sentiment string (감정 필터 — Retell 감정 문자열 정확 일치)
-      if (sentimentFilter && c.user_sentiment !== sentimentFilter) return false;
+      // Sentiment filter — use DB column 'sentiment', NOT 'user_sentiment' (감정 필터 — DB 컬럼 'sentiment' 사용 — 'user_sentiment' 아님)
+      if (sentimentFilter && c.sentiment !== sentimentFilter) return false;
 
       // Status filter — exact match against call_status value (상태 필터 — call_status 값 정확 일치)
       if (statusFilter && c.call_status !== statusFilter) return false;
