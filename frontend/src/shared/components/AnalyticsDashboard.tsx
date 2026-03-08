@@ -182,12 +182,13 @@ function Panel({ title, children, className }: {
 
 export interface AnalyticsDashboardProps {
   mode: 'agency' | 'store';
-  id:   string; // storeId when mode='store' — agencyId when mode='agency' (mode='store'일 때 storeId, mode='agency'일 때 agencyId)
+  id:   string; // storeId when mode='store' - agencyId when mode='agency' ...
+  forceAggregation?: boolean; // 👈 이 1줄을 추가합니다.
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
+export function AnalyticsDashboard({ mode, id, forceAggregation = false }: AnalyticsDashboardProps) {
   const router = useRouter();
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -198,6 +199,8 @@ export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   const [noStores,  setNoStores ] = useState(false); // agency has zero stores linked (에이전시에 연결된 매장 없음)
   // Default period matches the Overview widget for consistent cross-page numbers (개요 위젯과 일관된 크로스 페이지 숫자를 위해 기본 기간 일치)
   const [dateRange, setDateRange] = useState<DateRange>('month');
+
+  const [selectedStoreId, setSelectedStoreId] = useState<string>('all'); // 👈 이 1줄을 추가합니다.
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
