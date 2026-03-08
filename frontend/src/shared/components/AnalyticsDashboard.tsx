@@ -276,7 +276,7 @@ const fetchData = useCallback(async () => {
       }
 
       // 3. [날짜 및 데이터 조회]
-      const { startDate, endDate } = getAnalyticsDateBoundary(dateRange);
+      const { startDate, endDate } = getDateBoundary(dateRange);
 
       const { data: callsData, error: callsError } = await supabase
         .from('call_logs')
