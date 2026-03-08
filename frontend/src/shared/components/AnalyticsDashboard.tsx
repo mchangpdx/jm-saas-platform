@@ -260,17 +260,28 @@ const fetchData = useCallback(async () => {
         return;
       }
 
-      // 3. 🚨 [전수 조사를 통한 무적의 날짜 로직] 🚨
-      // 함수 반환값이 startDate든 start든, Date 객체든 문자열이든 모두 알아서 대응합니다.
-      const boundary = getDateBoundary(dateRange) || {};
-      const rawStart = boundary.startDate || boundary.start;
-      const rawEnd = boundary.endDate || boundary.end;
+      // 3. 🚨 [배열/객체 완벽 호환 무적의 날짜 추출기] 🚨
+      const boundary = getDateBoundary(dateRange);
+      let rawStart: any = null;
+      let rawEnd: any = null;
 
-      // Date 객체면 ISO 문자열로 변환하고, 이미 문자열이면 그대로 씁니다.
-      const startStr = rawStart instanceof Date ? rawStart.toISOString() : rawStart;
-      const endStr = rawEnd instanceof Date ? rawEnd.toISOString() : rawEnd;
+      if (Array.isArray(boundary)) {
+        // 배열 반환 시 (예: [startDate, endDate])
+        rawStart = boundary[0];
+        rawEnd = boundary[1];
+      } else if (boundary && typeof boundary === 'object') {
+        // 객체 반환 시 (예: {startDate, endDate} 또는 {from, to})
+        rawStart = boundary.startDate || boundary.start || boundary.from;
+        rawEnd = boundary.endDate || boundary.end || boundary.to;
+      }
 
-      // 4. 안전한 쿼리 빌드 ('All' 선택 시 날짜 필터를 알아서 제외하여 에러 방지)
+      // Date 객체면 ISO 변환, 이미 문자열이면 그대로 유지, 없으면 null 처리
+      const startStr = rawStart instanceof Date ? rawStart.toISOString() : (typeof rawStart === 'string' ? rawStart : null);
+      const endStr = rawEnd instanceof Date ? rawEnd.toISOString() : (typeof rawEnd === 'string' ? rawEnd : null);
+
+      console.log('[X-Ray] Applied Date Boundary:', { dateRange, startStr, endStr });
+
+      // 4. 안전한 쿼리 빌드 (startStr이 뽑혔을 때만 DB에 날짜 필터가 걸립니다!)
       let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
       if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
       if (endStr) callsQuery = callsQuery.lte('start_time', endStr);
@@ -289,7 +300,6 @@ const fetchData = useCallback(async () => {
       setOrders(ordersData || []);
 
     } catch (err: any) {
-      // 5. 🚨 [object Object] 에러 배너 완벽 해결 🚨
       console.error('[X-Ray] Fetch Error:', err);
       setError(err?.message || (typeof err === 'string' ? err : '데이터를 불러오는 중 오류가 발생했습니다.'));
     } finally {
