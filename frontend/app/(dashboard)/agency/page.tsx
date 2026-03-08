@@ -1,32 +1,21 @@
-// Agency overview page — landing page after login for agency-role users.
-// Uses useStoreContext() (NOT useSessionStore) to read agentId synchronously on first render.
-// Zustand's persisted store hydrates asynchronously from sessionStorage, causing an infinite
-// loading state when agentId is read from it on mount. StoreContext is populated synchronously
-// by DashboardShell from server-resolved props, guaranteeing agentId is available immediately.
-// (에이전시 개요 페이지 — useStoreContext()로 agentId를 첫 렌더에서 동기적으로 읽음.
-//  Zustand는 sessionStorage에서 비동기 수화되어 무한 로딩 상태를 유발하므로 사용 금지.
-//  StoreContext는 DashboardShell이 서버 props에서 동기적으로 채워 즉시 사용 가능)
-
 'use client';
 
 import Link                        from 'next/link';
 import { Mic, CalendarCheck }      from 'lucide-react';
 import { useStoreContext }         from '@/shared/contexts/StoreContext';
+import { useSessionStore }         from '@/shared/stores/sessionStore';
 import { AnalyticsDashboard }      from '@/shared/components/AnalyticsDashboard';
 
-// ── Page ──────────────────────────────────────────────────────────────────────
-
 export default function AgencyOverviewPage() {
-  // Read agentId from StoreContext — synchronous, no hydration delay, no loading state needed.
-  // agentId is the agency's identifier used by AnalyticsDashboard to query stores WHERE agency_id = agentId.
-  // (StoreContext에서 agentId 읽기 — 동기적, 수화 지연 없음, 로딩 상태 불필요.
-  //  agentId는 AnalyticsDashboard가 agency_id = agentId인 매장을 조회하는 데 사용하는 에이전시 식별자)
-  const { agentId } = useStoreContext();
+  const storeContext = useStoreContext() as any;
+  const session = useSessionStore((s: any) => s);
+
+  // [핵심 픽스] 클로드의 오타(agentId)를 무시하고, 실제 존재하는 에이전시 ID를 영혼까지 끌어모아 찾습니다.
+  const finalId = storeContext.agencyId || storeContext.id || storeContext.agentId || session.user?.id || '';
 
   return (
     <div className="space-y-8">
-
-      {/* Page heading (페이지 제목) */}
+      {/* 페이지 제목 */}
       <div>
         <h2 className="text-2xl font-bold tracking-tight text-gray-900">
           Agency Overall Performance
@@ -36,20 +25,10 @@ export default function AgencyOverviewPage() {
         </p>
       </div>
 
-      {/* Full analytics dashboard in agency mode — always rendered, no conditional gate.
-          AnalyticsDashboard handles its own empty/error states internally so there is no need
-          to guard on agentId here. A gate on agentId caused the error block to show because
-          StoreContext defaults agentId to '' (empty string, falsy) before the provider mounts.
-          (에이전시 모드 전체 분석 대시보드 — 항상 렌더링, 조건부 게이트 없음.
-           AnalyticsDashboard가 내부적으로 빈/오류 상태를 처리하므로 여기서 agentId 게이트 불필요.
-           agentId 게이트가 오류 블록을 표시한 원인: StoreContext 기본값 agentId='' 이 falsy이기 때문) */}
-      {/* forceAggregation={true} — completely ignores the sidebar store dropdown on this page.
-          The regular Analytics page omits this prop so the dropdown still filters there.
-          (forceAggregation={true} — 이 페이지에서 사이드바 매장 드롭다운을 완전히 무시.
-           일반 Analytics 페이지는 이 prop을 생략하여 드롭다운 필터링이 정상 동작) */}
-      <AnalyticsDashboard mode="agency" id={agentId} forceAggregation={true} />
+      {/* 대시보드 렌더링 - 찾은 finalId를 넣고, 강제 합산(forceAggregation) 스위치를 켭니다 */}
+      <AnalyticsDashboard mode="agency" id={finalId} forceAggregation={true} />
 
-      {/* Module shortcuts — quick navigation to key agency modules (주요 에이전시 모듈로의 빠른 내비게이션) */}
+      {/* 모듈 바로가기 */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Link
           href="/agency/ai-voice-bot"
