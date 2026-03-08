@@ -42,8 +42,7 @@ import {
   ChevronRight,
   Store,
 } from 'lucide-react';
-import { getSupabaseClient }  from '@/shared/api/supabaseClient';
-import { useSessionStore }    from '@/shared/stores/sessionStore';
+import { getSupabaseClient } from '@/shared/api/supabaseClient';
 import {
   type DateRange,
   type KpiCallLog,
@@ -181,112 +180,154 @@ function Panel({ title, children, className }: {
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
-interface AnalyticsDashboardProps {
+export interface AnalyticsDashboardProps {
   mode: 'agency' | 'store';
-  id: string;
-  forceAggregation?: boolean;
+  id:   string; // storeId when mode='store' — agencyId when mode='agency' (mode='store'일 때 storeId, mode='agency'일 때 agencyId)
 }
 
-// 🚨 --- 👇 여기서부터 증발했던 머리통 복구 👇 --- 🚨
-export function AnalyticsDashboard({ mode, id, forceAggregation = false }: AnalyticsDashboardProps) {
+// ── Main component ─────────────────────────────────────────────────────────────
+
+export function AnalyticsDashboard({ mode, id }: AnalyticsDashboardProps) {
   const router = useRouter();
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [logs,      setLogs     ] = useState<CallLog[]>([]);
+  const [orders,    setOrders   ] = useState<Order[]>([]);
+  const [loading,   setLoading  ] = useState(true);
+  const [error,     setError    ] = useState<string | null>(null);
+  const [noStores,  setNoStores ] = useState(false); // agency has zero stores linked (에이전시에 연결된 매장 없음)
+  // Default period matches the Overview widget for consistent cross-page numbers (개요 위젯과 일관된 크로스 페이지 숫자를 위해 기본 기간 일치)
   const [dateRange, setDateRange] = useState<DateRange>('month');
-  const [logs, setLogs] = useState<CallLog[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [noStores, setNoStores] = useState(false);
-  const [selectedStoreId, setSelectedStoreId] = useState<string>('all');
-// 🚨 --- 👆 여기까지 복구 끝 👆 --- 🚨
 
-const fetchData = useCallback(async () => {
-    // 1. UUID 400 에러 원천 차단
-    if (!id || id === '') {
-      setLoading(false);
-      return;
-    }
+  // ── Data fetching ──────────────────────────────────────────────────────────
 
+  // Single fetch function that serves both modes — re-runs whenever mode, id, or dateRange change.
+  // All date and status filters are applied server-side so every chart and KPI card is always
+  // driven by the exact same Supabase result sets.
+  // (mode, id, dateRange가 변경될 때마다 재실행되는 단일 조회 함수.
+  //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
+  //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     setNoStores(false);
 
     const supabase = getSupabaseClient();
+    let   storeIds: string[] = [];
 
-    try {
-      let targetStoreIds: string[] = [];
+    if (mode === 'agency') {
+      // Fetch all stores that belong to this agency via the agency_id column (agency_id 컬럼을 통해 이 에이전시에 속한 모든 매장 조회)
+      const { data: storeRows, error: storesErr } = await supabase
+        .from('stores')
+        .select('id')
+        .eq('agency_id', id);
 
-      // 2. 에이전시 및 스토어 컨텍스트 분리
-      if (mode === 'agency') {
-        if (forceAggregation) {
-          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
-          if (storesErr) throw storesErr;
-          targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
-        } else if (selectedStoreId && selectedStoreId !== 'all') {
-          targetStoreIds = [selectedStoreId];
-        } else {
-          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
-          if (storesErr) throw storesErr;
-          targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
-        }
-      } else {
-        targetStoreIds = [id];
-      }
-
-      if (targetStoreIds.length === 0) {
-        setNoStores(true);
-        setLogs([]);
-        setOrders([]);
+      if (storesErr) {
+        setError(storesErr.message);
+        setLoading(false);
         return;
       }
 
-      // 3. 🚨 팩트 기반 근본 해결: 가장 단순하고 절대 고장나지 않는 날짜 추출 🚨
-      const boundary = getDateBoundary(dateRange) || {};
-      
-      const rawStart = boundary.startDate || boundary.start || boundary[0];
-      const rawEnd   = boundary.endDate   || boundary.end   || boundary[1];
+      storeIds = (storeRows ?? []).map((r: { id: string }) => r.id);
 
-      // 복잡한 조건 싹 빼고, 직관적인 4단계 안전 변환기
-      function toSafeIsoString(val: any): string | null {
-        if (!val) return null;                                      // 1. 없으면 null (예: 'All' 선택 시)
-        if (typeof val === 'string') return val;                    // 2. 이미 문자열이면 그대로 통과
-        if (typeof val.toISOString === 'function') return val.toISOString(); // 3. Date 객체면 ISO 변환
-        return String(val);                                         // 4. 그 외 특이 케이스는 무조건 문자열 강제 변환
+      if (storeIds.length === 0) {
+        // Agency exists but has no stores attached yet — show empty state (에이전시는 존재하나 아직 연결된 매장 없음 — 빈 상태 표시)
+        setNoStores(true);
+        setLogs([]);
+        setOrders([]);
+        setLoading(false);
+        return;
       }
-
-      const startStr = toSafeIsoString(rawStart);
-      const endStr   = toSafeIsoString(rawEnd);
-
-      console.log('[X-Ray] Date Filter Engine:', { dateRange, startStr, endStr });
-
-      // 4. 안전한 쿼리 빌드 (startStr, endStr이 존재할 때만 작동)
-      let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
-      if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
-      if (endStr)   callsQuery = callsQuery.lte('start_time', endStr);
-
-      const { data: callsData, error: callsError } = await callsQuery;
-      if (callsError) throw callsError;
-
-      let ordersQuery = supabase.from('orders').select('*').in('store_id', targetStoreIds).eq('status', 'paid');
-      if (startStr) ordersQuery = ordersQuery.gte('created_at', startStr);
-      if (endStr)   ordersQuery = ordersQuery.lte('created_at', endStr);
-
-      const { data: ordersData, error: ordersError } = await ordersQuery;
-      if (ordersError) throw ordersError;
-
-      setLogs(callsData || []);
-      setOrders(ordersData || []);
-
-    } catch (err: any) {
-      console.error('[X-Ray] Fetch Error:', err);
-      setError(err?.message || (typeof err === 'string' ? err : '데이터를 불러오는 중 오류가 발생했습니다.'));
-    } finally {
-      setLoading(false);
+    } else {
+      // Store mode — use id directly as the single store scope (매장 모드 — id를 단일 매장 스코프로 직접 사용)
+      storeIds = [id];
     }
-  }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
 
-  // 🚨 --- 👇 사라졌던 시동 키 복구 👇 --- 🚨
+    // Compute server-side date boundaries from the selected period (선택된 기간에서 서버 사이드 날짜 경계 계산)
+    const boundary = getDateBoundary(dateRange);
+    const startIso = boundary ? boundary.toISOString() : null;
+    // Upper bound is always "now" — prevents any future-dated rows from leaking in (상한은 항상 "현재" — 미래 날짜 행이 포함되는 것을 방지)
+    const endIso   = new Date().toISOString();
+
+    // [X-Ray] Log the exact ISO strings being sent to Supabase so we can verify the filter is applied (Supabase로 전송되는 정확한 ISO 문자열을 로그에 출력하여 필터 적용 여부 확인)
+    console.log('[X-Ray] Date filter applied:', {
+      mode,
+      storeIds,
+      range:       dateRange,
+      start:       startIso ?? '(none — All time)',
+      end:         endIso,
+      filterActive: startIso !== null,
+    });
+
+    // Build the call_logs query — apply start_time bounds when a date range is active (날짜 범위가 활성화된 경우 start_time 경계를 적용하는 call_logs 쿼리 구성)
+    let logsQ = supabase
+      .from('call_logs')
+      .select('call_id, start_time, duration, sentiment, call_status, cost, customer_phone')
+      .in('store_id', storeIds)
+      .order('start_time', { ascending: false })
+      .limit(1000);
+
+    if (startIso) {
+      // Apply gte + lte on start_time so the period selector actually changes Total Calls / Cost (기간 선택기가 실제로 Total Calls/Cost를 변경하도록 start_time에 gte + lte 적용)
+      logsQ = logsQ.gte('start_time', startIso).lte('start_time', endIso);
+    }
+
+    // Build the orders query — ONLY paid orders, within the same date window (동일한 날짜 창 내의 결제 완료 주문만 포함하는 orders 쿼리 구성)
+    let ordersQ = supabase
+      .from('orders')
+      .select('created_at, total_amount')
+      .in('store_id', storeIds)
+      // Strictly filter to paid status — pending/cancelled orders must never inflate AI Revenue (결제 완료 상태로 엄격하게 필터링 — 대기/취소 주문은 AI 매출을 절대 부풀려선 안 됨)
+      .eq('status', 'paid')
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (startIso) {
+      // Apply created_at bounds in exact sync with the call_logs date filter (call_logs 날짜 필터와 정확히 동기화하여 created_at 경계 적용)
+      ordersQ = ordersQ.gte('created_at', startIso).lte('created_at', endIso);
+    }
+
+    // Execute both queries in parallel to minimise total round-trip time (총 왕복 시간 최소화를 위해 두 쿼리를 병렬 실행)
+    const [logsRes, ordersRes] = await Promise.all([logsQ, ordersQ]);
+
+    // [X-Ray] Log the exact row counts returned by Supabase so we can confirm the filter is working (필터 적용 여부를 확인하기 위해 Supabase가 반환한 정확한 행 수를 로그에 출력)
+    console.log('[X-Ray] Raw call_logs fetched:', logsRes.data?.length ?? 0, 'records');
+    console.log('[X-Ray] Raw orders fetched (paid only):', ordersRes.data?.length ?? 0, 'records');
+
+    // [X-Ray] Log Supabase errors so we can catch silent query failures (자동으로 실패하는 쿼리를 잡기 위해 Supabase 오류를 로그에 출력)
+    if (logsRes.error) {
+      console.error('[X-Ray] call_logs query error:', logsRes.error.message, logsRes.error);
+    }
+    if (ordersRes.error) {
+      console.error('[X-Ray] orders query error:', ordersRes.error.message, ordersRes.error);
+    }
+
+    // [X-Ray] Log the first 3 call_log rows so we can verify start_time values against the filter (필터 대비 start_time 값을 확인하기 위해 call_log의 첫 3행을 로그에 출력)
+    console.log('[X-Ray] call_logs sample (first 3):', (logsRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
+      call_id:    r.call_id    as string | undefined,
+      start_time: r.start_time as string | undefined,
+      status:     r.call_status as string | undefined,
+    })));
+
+    // [X-Ray] Log the first 3 order rows so we can verify created_at and total_amount values (created_at과 total_amount 값을 확인하기 위해 order의 첫 3행을 로그에 출력)
+    console.log('[X-Ray] orders sample (first 3):', (ordersRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
+      created_at:   r.created_at   as string | undefined,
+      total_amount: r.total_amount as number | undefined,
+    })));
+
+    setLogs((logsRes.data     as CallLog[] | null) ?? []);
+    setOrders((ordersRes.data as Order[]   | null) ?? []);
+
+    // Surface errors — second error appended only when first is absent (오류 노출 — 두 번째 오류는 첫 번째가 없을 때만 추가)
+    if (logsRes.error)   setError(logsRes.error.message);
+    if (ordersRes.error) setError((p) => p ?? ordersRes.error!.message);
+
+    setLoading(false);
+  // dateRange is a dep so changing the period fires a fresh server-side query (기간 변경이 새로운 서버 사이드 쿼리를 실행하도록 dateRange를 의존성으로 추가)
+  }, [mode, id, dateRange]);
+
+  // Trigger fetchData whenever mode, id, or dateRange changes (mode, id, dateRange 변경 시 fetchData 실행)
   useEffect(() => { fetchData(); }, [fetchData]);
-  // 🚨 --- 👆 복구 끝 👆 --- 🚨
 
   // ── Derived data — all computed from the same `logs` + `orders` arrays ─────
   // Because logs/orders are already server-filtered, these memos are pure aggregations
@@ -510,10 +551,7 @@ const fetchData = useCallback(async () => {
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Analytics</h2>
           <p className="text-sm text-gray-500 mt-0.5">
             {mode === 'agency'
-              // forceAggregation overrides the dropdown — always show the aggregated subtitle (forceAggregation은 드롭다운을 재정의 — 항상 집계 자막 표시)
-              ? ((!forceAggregation && selectedStoreId)
-                  ? 'Showing data for selected store — change the sidebar dropdown to switch or aggregate all.'
-                  : 'Aggregated across all stores.')
+              ? 'Aggregated AI voice performance across all stores.'
               : 'AI voice agent performance for this store.'}
           </p>
         </div>
