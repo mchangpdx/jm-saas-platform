@@ -221,7 +221,7 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
   //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
   //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
 const fetchData = useCallback(async () => {
-    // 1. UUID 400 에러 방어선
+    // 1. UUID 400 에러 원천 차단
     if (!id || id === '') {
       setLoading(false);
       return;
@@ -236,26 +236,17 @@ const fetchData = useCallback(async () => {
     try {
       let targetStoreIds: string[] = [];
 
-      // 2. 에이전시 매장 합산 로직
+      // 2. 에이전시 및 스토어 컨텍스트 분리
       if (mode === 'agency') {
         if (forceAggregation) {
-          const { data: storeRows, error: storesErr } = await supabase
-            .from('stores')
-            .select('id')
-            .eq('agency_id', id);
-
-          if (storesErr) throw new Error(storesErr.message);
+          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
+          if (storesErr) throw storesErr;
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
-
         } else if (selectedStoreId && selectedStoreId !== 'all') {
           targetStoreIds = [selectedStoreId];
         } else {
-          const { data: storeRows, error: storesErr } = await supabase
-            .from('stores')
-            .select('id')
-            .eq('agency_id', id);
-
-          if (storesErr) throw new Error(storesErr.message);
+          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
+          if (storesErr) throw storesErr;
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
         }
       } else {
@@ -269,34 +260,38 @@ const fetchData = useCallback(async () => {
         return;
       }
 
-      // 3. 🚨 [문제의 원인 완벽 해결] 🚨
-      // 사장님의 유틸리티 함수는 'start'와 'end'를 반환하며, 이미 문자열(ISO string)입니다!
-      const { start, end } = getDateBoundary(dateRange);
+      // 3. 🚨 [전수 조사를 통한 무적의 날짜 로직] 🚨
+      // 함수 반환값이 startDate든 start든, Date 객체든 문자열이든 모두 알아서 대응합니다.
+      const boundary = getDateBoundary(dateRange) || {};
+      const rawStart = boundary.startDate || boundary.start;
+      const rawEnd = boundary.endDate || boundary.end;
 
-      const { data: callsData, error: callsError } = await supabase
-        .from('call_logs')
-        .select('*')
-        .in('store_id', targetStoreIds)
-        .gte('start_time', start) // .toISOString() 삭제 완료
-        .lte('start_time', end);
+      // Date 객체면 ISO 문자열로 변환하고, 이미 문자열이면 그대로 씁니다.
+      const startStr = rawStart instanceof Date ? rawStart.toISOString() : rawStart;
+      const endStr = rawEnd instanceof Date ? rawEnd.toISOString() : rawEnd;
 
+      // 4. 안전한 쿼리 빌드 ('All' 선택 시 날짜 필터를 알아서 제외하여 에러 방지)
+      let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
+      if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
+      if (endStr) callsQuery = callsQuery.lte('start_time', endStr);
+
+      const { data: callsData, error: callsError } = await callsQuery;
       if (callsError) throw callsError;
 
-      const { data: ordersData, error: ordersError } = await supabase
-        .from('orders')
-        .select('*')
-        .in('store_id', targetStoreIds)
-        .eq('status', 'paid') 
-        .gte('created_at', start)
-        .lte('created_at', end);
+      let ordersQuery = supabase.from('orders').select('*').in('store_id', targetStoreIds).eq('status', 'paid');
+      if (startStr) ordersQuery = ordersQuery.gte('created_at', startStr);
+      if (endStr) ordersQuery = ordersQuery.lte('created_at', endStr);
 
+      const { data: ordersData, error: ordersError } = await ordersQuery;
       if (ordersError) throw ordersError;
 
       setLogs(callsData || []);
       setOrders(ordersData || []);
 
     } catch (err: any) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 5. 🚨 [object Object] 에러 배너 완벽 해결 🚨
+      console.error('[X-Ray] Fetch Error:', err);
+      setError(err?.message || (typeof err === 'string' ? err : '데이터를 불러오는 중 오류가 발생했습니다.'));
     } finally {
       setLoading(false);
     }
