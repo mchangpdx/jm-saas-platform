@@ -190,36 +190,6 @@ export interface AnalyticsDashboardProps {
   // (true이면 agency 모드는 항상 모든 매장을 집계하고 사이드바 드롭다운을 완전히 무시.
   //  에이전시 개요 페이지에서 단일 매장 컨텍스트로 bleed되지 않도록 사용.
   //  일반 Analytics 페이지는 이 값을 미설정(false)하여 드롭다운이 정상 동작)
-  forceAggregation?: boolean;
-}
-
-// ── Main component ─────────────────────────────────────────────────────────────
-
-export function AnalyticsDashboard({ mode, id, forceAggregation = false }: AnalyticsDashboardProps) {
-  const router = useRouter();
-
-  // Agency store-context isolation — when a specific store is chosen in the sidebar dropdown,
-  // restrict agency-mode data to that store only; null means aggregate all stores.
-  // (에이전시 매장 컨텍스트 격리 — 사이드바 드롭다운에서 특정 매장 선택 시 해당 매장 데이터만 표시; null이면 전체 집계)
-  const selectedStoreId = useSessionStore((s) => s.selectedStoreId);
-
-  // ── State ──────────────────────────────────────────────────────────────────
-  const [logs,      setLogs     ] = useState<CallLog[]>([]);
-  const [orders,    setOrders   ] = useState<Order[]>([]);
-  const [loading,   setLoading  ] = useState(true);
-  const [error,     setError    ] = useState<string | null>(null);
-  const [noStores,  setNoStores ] = useState(false); // agency has zero stores linked (에이전시에 연결된 매장 없음)
-  // Default period matches the Overview widget for consistent cross-page numbers (개요 위젯과 일관된 크로스 페이지 숫자를 위해 기본 기간 일치)
-  const [dateRange, setDateRange] = useState<DateRange>('month');
-
-  // ── Data fetching ──────────────────────────────────────────────────────────
-
-  // Single fetch function that serves both modes — re-runs whenever mode, id, or dateRange change.
-  // All date and status filters are applied server-side so every chart and KPI card is always
-  // driven by the exact same Supabase result sets.
-  // (mode, id, dateRange가 변경될 때마다 재실행되는 단일 조회 함수.
-  //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
-  //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
 const fetchData = useCallback(async () => {
     // 1. UUID 400 에러 원천 차단
     if (!id || id === '') {
@@ -260,28 +230,31 @@ const fetchData = useCallback(async () => {
         return;
       }
 
-      // 3. 🚨 [배열/객체 완벽 호환 무적의 날짜 추출기] 🚨
-      const boundary = getDateBoundary(dateRange);
+      // 3. 🚨 [Day.js / Moment.js 완벽 호환 날짜 추출기] 🚨
+      const boundary = getDateBoundary(dateRange) || {};
       let rawStart: any = null;
       let rawEnd: any = null;
 
       if (Array.isArray(boundary)) {
-        // 배열 반환 시 (예: [startDate, endDate])
         rawStart = boundary[0];
         rawEnd = boundary[1];
-      } else if (boundary && typeof boundary === 'object') {
-        // 객체 반환 시 (예: {startDate, endDate} 또는 {from, to})
+      } else if (typeof boundary === 'object') {
         rawStart = boundary.startDate || boundary.start || boundary.from;
         rawEnd = boundary.endDate || boundary.end || boundary.to;
       }
 
-      // Date 객체면 ISO 변환, 이미 문자열이면 그대로 유지, 없으면 null 처리
-      const startStr = rawStart instanceof Date ? rawStart.toISOString() : (typeof rawStart === 'string' ? rawStart : null);
-      const endStr = rawEnd instanceof Date ? rawEnd.toISOString() : (typeof rawEnd === 'string' ? rawEnd : null);
+      // 💡 [핵심 픽스] instanceof Date 대신 .toISOString() 함수가 존재하는지 직접 확인
+      const startStr = (rawStart && typeof rawStart.toISOString === 'function')
+        ? rawStart.toISOString()
+        : (typeof rawStart === 'string' ? rawStart : null);
+
+      const endStr = (rawEnd && typeof rawEnd.toISOString === 'function')
+        ? rawEnd.toISOString()
+        : (typeof rawEnd === 'string' ? rawEnd : null);
 
       console.log('[X-Ray] Applied Date Boundary:', { dateRange, startStr, endStr });
 
-      // 4. 안전한 쿼리 빌드 (startStr이 뽑혔을 때만 DB에 날짜 필터가 걸립니다!)
+      // 4. 안전한 쿼리 빌드 (startStr, endStr이 존재할 때만 필터 적용)
       let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
       if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
       if (endStr) callsQuery = callsQuery.lte('start_time', endStr);
