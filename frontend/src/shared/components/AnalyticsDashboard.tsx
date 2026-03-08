@@ -282,6 +282,10 @@ const fetchData = useCallback(async () => {
     }
   }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
 
+  // 🚨 --- 👇 사라졌던 시동 키 복구 👇 --- 🚨
+  useEffect(() => { fetchData(); }, [fetchData]);
+  // 🚨 --- 👆 복구 끝 👆 --- 🚨
+  
   // ── Derived data — all computed from the same `logs` + `orders` arrays ─────
   // Because logs/orders are already server-filtered, these memos are pure aggregations
   // with no further date logic — the single source of truth is the fetch, not the memo.
