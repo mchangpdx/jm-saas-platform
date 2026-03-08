@@ -187,8 +187,19 @@ interface AnalyticsDashboardProps {
   forceAggregation?: boolean;
 }
 
+// 🚨 --- 👇 여기서부터 증발했던 머리통 복구 👇 --- 🚨
+export function AnalyticsDashboard({ mode, id, forceAggregation = false }: AnalyticsDashboardProps) {
+  const router = useRouter();
+  const [dateRange, setDateRange] = useState<DateRange>('month');
+  const [logs, setLogs] = useState<CallLog[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [noStores, setNoStores] = useState(false);
+  const [selectedStoreId, setSelectedStoreId] = useState<string>('all');
+// 🚨 --- 👆 여기까지 복구 끝 👆 --- 🚨
+
 const fetchData = useCallback(async () => {
-    // 1. UUID 400 에러 원천 차단
     if (!id || id === '') {
       setLoading(false);
       return;
@@ -203,7 +214,6 @@ const fetchData = useCallback(async () => {
     try {
       let targetStoreIds: string[] = [];
 
-      // 2. 에이전시 및 스토어 컨텍스트 분리
       if (mode === 'agency') {
         if (forceAggregation) {
           const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
@@ -227,7 +237,6 @@ const fetchData = useCallback(async () => {
         return;
       }
 
-      // 3. 🚨 [Day.js / Moment.js 완벽 호환 날짜 추출기] 🚨
       const boundary = getDateBoundary(dateRange) || {};
       let rawStart: any = null;
       let rawEnd: any = null;
@@ -240,7 +249,6 @@ const fetchData = useCallback(async () => {
         rawEnd = boundary.endDate || boundary.end || boundary.to;
       }
 
-      // 💡 [핵심 픽스] instanceof Date 대신 .toISOString() 함수가 존재하는지 직접 확인
       const startStr = (rawStart && typeof rawStart.toISOString === 'function')
         ? rawStart.toISOString()
         : (typeof rawStart === 'string' ? rawStart : null);
@@ -249,9 +257,6 @@ const fetchData = useCallback(async () => {
         ? rawEnd.toISOString()
         : (typeof rawEnd === 'string' ? rawEnd : null);
 
-      console.log('[X-Ray] Applied Date Boundary:', { dateRange, startStr, endStr });
-
-      // 4. 안전한 쿼리 빌드 (startStr, endStr이 존재할 때만 필터 적용)
       let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
       if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
       if (endStr) callsQuery = callsQuery.lte('start_time', endStr);
@@ -276,9 +281,6 @@ const fetchData = useCallback(async () => {
       setLoading(false);
     }
   }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
-
-  // Trigger fetchData whenever mode, id, or dateRange changes (mode, id, dateRange 변경 시 fetchData 실행)
-  useEffect(() => { fetchData(); }, [fetchData]);
 
   // ── Derived data — all computed from the same `logs` + `orders` arrays ─────
   // Because logs/orders are already server-filtered, these memos are pure aggregations
