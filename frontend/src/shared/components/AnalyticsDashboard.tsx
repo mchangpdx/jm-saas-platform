@@ -221,7 +221,7 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
   //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
   //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
 const fetchData = useCallback(async () => {
-    // 1. [핵심 방어 코드] ID가 비어있으면 DB 찌르지 말고 조용히 대기 (400 UUID 에러 차단)
+    // 1. UUID 400 에러 방어선
     if (!id || id === '') {
       setLoading(false);
       return;
@@ -236,10 +236,9 @@ const fetchData = useCallback(async () => {
     try {
       let targetStoreIds: string[] = [];
 
-      // 2. [강제 합산 로직]
+      // 2. 에이전시 매장 합산 로직
       if (mode === 'agency') {
         if (forceAggregation) {
-          // 오버뷰 화면: 드롭다운 무시하고 에이전시 소속 전체 매장 ID 가져오기
           const { data: storeRows, error: storesErr } = await supabase
             .from('stores')
             .select('id')
@@ -249,11 +248,8 @@ const fetchData = useCallback(async () => {
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
 
         } else if (selectedStoreId && selectedStoreId !== 'all') {
-          // 분석 메뉴: 특정 매장 선택됨
           targetStoreIds = [selectedStoreId];
-
         } else {
-          // 분석 메뉴: 'All Stores' 선택됨
           const { data: storeRows, error: storesErr } = await supabase
             .from('stores')
             .select('id')
@@ -263,11 +259,9 @@ const fetchData = useCallback(async () => {
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
         }
       } else {
-        // 스토어 모드
         targetStoreIds = [id];
       }
 
-      // 타겟 매장이 없으면 0으로 처리하고 조용히 종료
       if (targetStoreIds.length === 0) {
         setNoStores(true);
         setLogs([]);
@@ -275,15 +269,16 @@ const fetchData = useCallback(async () => {
         return;
       }
 
-      // 3. [날짜 및 데이터 조회]
-      const { startDate, endDate } = getDateBoundary(dateRange);
+      // 3. 🚨 [문제의 원인 완벽 해결] 🚨
+      // 사장님의 유틸리티 함수는 'start'와 'end'를 반환하며, 이미 문자열(ISO string)입니다!
+      const { start, end } = getDateBoundary(dateRange);
 
       const { data: callsData, error: callsError } = await supabase
         .from('call_logs')
         .select('*')
         .in('store_id', targetStoreIds)
-        .gte('start_time', startDate.toISOString())
-        .lte('start_time', endDate.toISOString());
+        .gte('start_time', start) // .toISOString() 삭제 완료
+        .lte('start_time', end);
 
       if (callsError) throw callsError;
 
@@ -291,9 +286,9 @@ const fetchData = useCallback(async () => {
         .from('orders')
         .select('*')
         .in('store_id', targetStoreIds)
-        .eq('status', 'paid') // [핵심] 결제 완료된 건만!
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString());
+        .eq('status', 'paid') 
+        .gte('created_at', start)
+        .lte('created_at', end);
 
       if (ordersError) throw ordersError;
 
