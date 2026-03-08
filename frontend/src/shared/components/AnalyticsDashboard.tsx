@@ -181,15 +181,12 @@ function Panel({ title, children, className }: {
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
-export interface AnalyticsDashboardProps {
-  mode:              'agency' | 'store';
-  id:                string;  // storeId when mode='store' — agencyId when mode='agency' (mode='store'일 때 storeId, mode='agency'일 때 agencyId)
-  // When true, agency mode always aggregates ALL stores and completely ignores the sidebar dropdown.
-  // Used by the Agency Overview page so it never bleeds into single-store context.
-  // The regular Analytics page leaves this unset (false) so the dropdown still works there.
-  // (true이면 agency 모드는 항상 모든 매장을 집계하고 사이드바 드롭다운을 완전히 무시.
-  //  에이전시 개요 페이지에서 단일 매장 컨텍스트로 bleed되지 않도록 사용.
-  //  일반 Analytics 페이지는 이 값을 미설정(false)하여 드롭다운이 정상 동작)
+interface AnalyticsDashboardProps {
+  mode: 'agency' | 'store';
+  id: string;
+  forceAggregation?: boolean;
+}
+
 const fetchData = useCallback(async () => {
     // 1. UUID 400 에러 원천 차단
     if (!id || id === '') {
