@@ -227,40 +227,24 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
     try {
       let targetStoreIds: string[] = [];
 
-      // =====================================================================
-      // 🚨 [핵심 픽스] 실행 경로 완벽 격리: 3가지 케이스 절대 간섭 불가 🚨
-      // =====================================================================
-      
-      if (mode === 'store') {
-        // 케이스 1: 스토어 모드 (가장 단순함. 현재 접속한 스토어 1개만 조회)
+      // 2. 에이전시 및 스토어 컨텍스트 완벽 격리
+      if (mode === 'agency') {
+        if (forceAggregation) {
+          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
+          if (storesErr) throw storesErr;
+          targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
+        } else if (selectedStoreId && selectedStoreId !== 'all') {
+          targetStoreIds = [selectedStoreId];
+        } else {
+          const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
+          if (storesErr) throw storesErr;
+          targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
+        }
+      } else {
         targetStoreIds = [id];
-        console.log('[X-Ray] Mode: Store -> Fetching exactly 1 store:', targetStoreIds);
-      } 
-      else if (mode === 'agency' && !forceAggregation && selectedStoreId && selectedStoreId !== 'all') {
-        // 케이스 2: 에이전시 모드에서 '특정 스토어 1개'를 선택했을 때
-        targetStoreIds = [selectedStoreId];
-        console.log('[X-Ray] Mode: Agency (Single Store) -> Fetching exactly 1 store:', targetStoreIds);
-      } 
-      else {
-        // 케이스 3: 에이전시 오버뷰 (forceAggregation 켜짐 OR 'All' 선택)
-        // 현재 에이전시 소속인 모든 가게 ID를 싹 취합합니다.
-        console.log('[X-Ray] Mode: Agency (Overview/All) -> Fetching ALL stores for agency:', id);
-        
-        const { data: storeRows, error: storesErr } = await supabase
-          .from('stores')
-          .select('id')
-          .eq('agency_id', id);
-
-        if (storesErr) throw storesErr;
-        
-        // 검색된 모든 가게 ID를 배열로 만듭니다. (예: ['store-A', 'store-B'])
-        targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
-        console.log('[X-Ray] Agency Overview Target Stores:', targetStoreIds.length, 'stores found.');
       }
 
-      // =====================================================================
-
-      // 타겟 매장이 없으면 조용히 빈 화면 렌더링 후 종료
+      // 타겟 매장이 없으면 조용히 종료
       if (targetStoreIds.length === 0) {
         setNoStores(true);
         setLogs([]);
@@ -268,7 +252,7 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
         return;
       }
 
-      // 3. 날짜 필터 (가장 단순하고 절대 고장나지 않는 순정 로직)
+      // 3. 🚨 가장 단순하고 완벽한 날짜 추출기 (어떤 라이브러리가 와도 절대 고장나지 않음) 🚨
       const boundary = getDateBoundary(dateRange) || {};
       
       const rawStart = boundary.startDate || boundary.start || boundary[0];
@@ -286,7 +270,7 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
 
       console.log('[X-Ray] Date Filter Engine:', { dateRange, startStr, endStr });
 
-      // 4. 안전한 쿼리 빌드 (Supabase가 배열 안에 1개가 있든 100개가 있든 알아서 다 취합해 줍니다!)
+      // 4. 안전한 쿼리 빌드
       let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
       if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
       if (endStr)   callsQuery = callsQuery.lte('start_time', endStr);
@@ -311,6 +295,10 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
       setLoading(false);
     }
   }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
+
+  // 🚨 --- 👇 증발했던 시동 키 완벽 복구 👇 --- 🚨
+  useEffect(() => { fetchData(); }, [fetchData]);
+  // 🚨 --- 👆 복구 끝 👆 --- 🚨
 
   // ── Derived data — all computed from the same `logs` + `orders` arrays ─────
   // Because logs/orders are already server-filtered, these memos are pure aggregations
