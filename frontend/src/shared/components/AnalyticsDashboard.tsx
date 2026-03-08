@@ -200,6 +200,7 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
 // 🚨 --- 👆 여기까지 복구 끝 👆 --- 🚨
 
 const fetchData = useCallback(async () => {
+    // 1. UUID 400 에러 원천 차단
     if (!id || id === '') {
       setLoading(false);
       return;
@@ -214,6 +215,7 @@ const fetchData = useCallback(async () => {
     try {
       let targetStoreIds: string[] = [];
 
+      // 2. 에이전시 및 스토어 컨텍스트 분리
       if (mode === 'agency') {
         if (forceAggregation) {
           const { data: storeRows, error: storesErr } = await supabase.from('stores').select('id').eq('agency_id', id);
@@ -237,36 +239,36 @@ const fetchData = useCallback(async () => {
         return;
       }
 
+      // 3. 🚨 팩트 기반 근본 해결: 가장 단순하고 절대 고장나지 않는 날짜 추출 🚨
       const boundary = getDateBoundary(dateRange) || {};
-      let rawStart: any = null;
-      let rawEnd: any = null;
+      
+      const rawStart = boundary.startDate || boundary.start || boundary[0];
+      const rawEnd   = boundary.endDate   || boundary.end   || boundary[1];
 
-      if (Array.isArray(boundary)) {
-        rawStart = boundary[0];
-        rawEnd = boundary[1];
-      } else if (typeof boundary === 'object') {
-        rawStart = boundary.startDate || boundary.start || boundary.from;
-        rawEnd = boundary.endDate || boundary.end || boundary.to;
+      // 복잡한 조건 싹 빼고, 직관적인 4단계 안전 변환기
+      function toSafeIsoString(val: any): string | null {
+        if (!val) return null;                                      // 1. 없으면 null (예: 'All' 선택 시)
+        if (typeof val === 'string') return val;                    // 2. 이미 문자열이면 그대로 통과
+        if (typeof val.toISOString === 'function') return val.toISOString(); // 3. Date 객체면 ISO 변환
+        return String(val);                                         // 4. 그 외 특이 케이스는 무조건 문자열 강제 변환
       }
 
-      const startStr = (rawStart && typeof rawStart.toISOString === 'function')
-        ? rawStart.toISOString()
-        : (typeof rawStart === 'string' ? rawStart : null);
+      const startStr = toSafeIsoString(rawStart);
+      const endStr   = toSafeIsoString(rawEnd);
 
-      const endStr = (rawEnd && typeof rawEnd.toISOString === 'function')
-        ? rawEnd.toISOString()
-        : (typeof rawEnd === 'string' ? rawEnd : null);
+      console.log('[X-Ray] Date Filter Engine:', { dateRange, startStr, endStr });
 
+      // 4. 안전한 쿼리 빌드 (startStr, endStr이 존재할 때만 작동)
       let callsQuery = supabase.from('call_logs').select('*').in('store_id', targetStoreIds);
       if (startStr) callsQuery = callsQuery.gte('start_time', startStr);
-      if (endStr) callsQuery = callsQuery.lte('start_time', endStr);
+      if (endStr)   callsQuery = callsQuery.lte('start_time', endStr);
 
       const { data: callsData, error: callsError } = await callsQuery;
       if (callsError) throw callsError;
 
       let ordersQuery = supabase.from('orders').select('*').in('store_id', targetStoreIds).eq('status', 'paid');
       if (startStr) ordersQuery = ordersQuery.gte('created_at', startStr);
-      if (endStr) ordersQuery = ordersQuery.lte('created_at', endStr);
+      if (endStr)   ordersQuery = ordersQuery.lte('created_at', endStr);
 
       const { data: ordersData, error: ordersError } = await ordersQuery;
       if (ordersError) throw ordersError;
@@ -285,7 +287,7 @@ const fetchData = useCallback(async () => {
   // 🚨 --- 👇 사라졌던 시동 키 복구 👇 --- 🚨
   useEffect(() => { fetchData(); }, [fetchData]);
   // 🚨 --- 👆 복구 끝 👆 --- 🚨
-  
+
   // ── Derived data — all computed from the same `logs` + `orders` arrays ─────
   // Because logs/orders are already server-filtered, these memos are pure aggregations
   // with no further date logic — the single source of truth is the fetch, not the memo.
