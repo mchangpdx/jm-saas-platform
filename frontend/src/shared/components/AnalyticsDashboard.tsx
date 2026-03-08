@@ -220,13 +220,8 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
   // (mode, id, dateRange가 변경될 때마다 재실행되는 단일 조회 함수.
   //  모든 날짜 및 상태 필터를 서버 사이드에서 적용하므로
   //  모든 차트와 KPI 카드가 항상 동일한 Supabase 결과셋으로 구동됨)
-  const fetchData = useCallback(async () => {
-    // Strict UUID guard — abort immediately if id is empty or undefined.
-    // StoreContext defaults agentId to '' before DashboardShell's provider mounts,
-    // passing '' to .eq('agency_id', '') causes a 400 "invalid input syntax for type uuid".
-    // (엄격한 UUID 가드 — id가 비어있거나 undefined이면 즉시 중단.
-    //  StoreContext는 DashboardShell provider 마운트 전 agentId를 ''로 기본 설정하여
-    //  .eq('agency_id', '')에 전달 시 400 "invalid input syntax for type uuid" 발생)
+const fetchData = useCallback(async () => {
+    // 1. [핵심 방어 코드] ID가 비어있으면 DB 찌르지 말고 조용히 대기 (400 UUID 에러 차단)
     if (!id || id === '') {
       setLoading(false);
       return;
@@ -239,15 +234,12 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
     const supabase = getSupabaseClient();
 
     try {
-      // ── Resolve target store IDs ─────────────────────────────────────────────
       let targetStoreIds: string[] = [];
 
+      // 2. [강제 합산 로직]
       if (mode === 'agency') {
         if (forceAggregation) {
-          // forceAggregation=true: always fetch ALL stores for the agency, ignoring the dropdown.
-          // Used by the Agency Overview page to prevent context bleed from the sidebar selector.
-          // (forceAggregation=true: 드롭다운을 무시하고 항상 에이전시의 모든 매장 조회.
-          //  에이전시 개요 페이지에서 사이드바 선택기의 컨텍스트 bleed를 방지하는 데 사용)
+          // 오버뷰 화면: 드롭다운 무시하고 에이전시 소속 전체 매장 ID 가져오기
           const { data: storeRows, error: storesErr } = await supabase
             .from('stores')
             .select('id')
@@ -257,13 +249,11 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
 
         } else if (selectedStoreId && selectedStoreId !== 'all') {
-          // A specific store is selected in the dropdown — scope to that store only.
-          // (드롭다운에서 특정 매장 선택 — 해당 매장 데이터만 스코프)
+          // 분석 메뉴: 특정 매장 선택됨
           targetStoreIds = [selectedStoreId];
 
         } else {
-          // No specific store selected — aggregate ALL stores for this agency.
-          // (특정 매장 미선택 — 에이전시 전체 매장 집계)
+          // 분석 메뉴: 'All Stores' 선택됨
           const { data: storeRows, error: storesErr } = await supabase
             .from('stores')
             .select('id')
@@ -272,13 +262,12 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
           if (storesErr) throw new Error(storesErr.message);
           targetStoreIds = (storeRows ?? []).map((s: { id: string }) => s.id);
         }
-
       } else {
-        // Store mode — id IS the store ID, use it directly (매장 모드 — id가 storeId이므로 직접 사용)
+        // 스토어 모드
         targetStoreIds = [id];
       }
 
-      // Early exit if no stores resolved — show empty state, not an error (매장 없음 — 오류가 아닌 빈 상태 표시)
+      // 타겟 매장이 없으면 0으로 처리하고 조용히 종료
       if (targetStoreIds.length === 0) {
         setNoStores(true);
         setLogs([]);
@@ -286,95 +275,36 @@ export function AnalyticsDashboard({ mode, id, forceAggregation = false }: Analy
         return;
       }
 
-      // ── Date boundaries ──────────────────────────────────────────────────────
+      // 3. [날짜 및 데이터 조회]
+      const { startDate, endDate } = getAnalyticsDateBoundary(dateRange);
 
-      // Compute server-side date boundaries from the selected period (선택된 기간에서 서버 사이드 날짜 경계 계산)
-      const boundary = getDateBoundary(dateRange);
-      const startIso = boundary ? boundary.toISOString() : null;
-      // Upper bound is always "now" — prevents future-dated rows from leaking in (상한은 항상 "현재" — 미래 날짜 행이 포함되는 것을 방지)
-      const endIso   = new Date().toISOString();
-
-      // [X-Ray] Log the exact filter being sent to Supabase (Supabase로 전송되는 정확한 필터를 로그에 출력)
-      console.log('[X-Ray] Date filter applied:', {
-        mode,
-        forceAggregation,
-        targetStoreIds,
-        range:        dateRange,
-        start:        startIso ?? '(none — All time)',
-        end:          endIso,
-        filterActive: startIso !== null,
-      });
-
-      // ── Build and execute queries ────────────────────────────────────────────
-
-      // Build the call_logs query — apply start_time bounds when a date range is active (날짜 범위가 활성화된 경우 start_time 경계를 적용하는 call_logs 쿼리 구성)
-      let logsQ = supabase
+      const { data: callsData, error: callsError } = await supabase
         .from('call_logs')
-        .select('call_id, start_time, duration, sentiment, call_status, cost, customer_phone')
+        .select('*')
         .in('store_id', targetStoreIds)
-        .order('start_time', { ascending: false })
-        .limit(1000);
+        .gte('start_time', startDate.toISOString())
+        .lte('start_time', endDate.toISOString());
 
-      if (startIso) {
-        // Apply gte + lte on start_time so the period selector actually changes Total Calls / Cost (기간 선택기가 실제로 Total Calls/Cost를 변경하도록 start_time에 gte + lte 적용)
-        logsQ = logsQ.gte('start_time', startIso).lte('start_time', endIso);
-      }
+      if (callsError) throw callsError;
 
-      // Build the orders query — ONLY paid orders, within the same date window (동일한 날짜 창 내의 결제 완료 주문만 포함하는 orders 쿼리 구성)
-      let ordersQ = supabase
+      const { data: ordersData, error: ordersError } = await supabase
         .from('orders')
-        .select('created_at, total_amount')
+        .select('*')
         .in('store_id', targetStoreIds)
-        // Strictly filter to paid status — pending/cancelled orders must never inflate AI Revenue (결제 완료 상태로 엄격하게 필터링 — 대기/취소 주문은 AI 매출을 절대 부풀려선 안 됨)
-        .eq('status', 'paid')
-        .order('created_at', { ascending: false })
-        .limit(1000);
+        .eq('status', 'paid') // [핵심] 결제 완료된 건만!
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', endDate.toISOString());
 
-      if (startIso) {
-        // Apply created_at bounds in exact sync with the call_logs date filter (call_logs 날짜 필터와 정확히 동기화하여 created_at 경계 적용)
-        ordersQ = ordersQ.gte('created_at', startIso).lte('created_at', endIso);
-      }
+      if (ordersError) throw ordersError;
 
-      // Execute both queries in parallel to minimise total round-trip time (총 왕복 시간 최소화를 위해 두 쿼리를 병렬 실행)
-      const [logsRes, ordersRes] = await Promise.all([logsQ, ordersQ]);
+      setLogs(callsData || []);
+      setOrders(ordersData || []);
 
-      // [X-Ray] Log the exact row counts returned by Supabase (Supabase가 반환한 정확한 행 수를 로그에 출력)
-      console.log('[X-Ray] Raw call_logs fetched:', logsRes.data?.length ?? 0, 'records');
-      console.log('[X-Ray] Raw orders fetched (paid only):', ordersRes.data?.length ?? 0, 'records');
-
-      // [X-Ray] Log Supabase errors so we can catch silent query failures (자동으로 실패하는 쿼리를 잡기 위해 Supabase 오류를 로그에 출력)
-      if (logsRes.error)   console.error('[X-Ray] call_logs query error:', logsRes.error.message, logsRes.error);
-      if (ordersRes.error) console.error('[X-Ray] orders query error:',   ordersRes.error.message, ordersRes.error);
-
-      // [X-Ray] Log the first 3 call_log rows to verify start_time values against the filter (필터 대비 start_time 값을 확인하기 위해 call_log의 첫 3행을 로그에 출력)
-      console.log('[X-Ray] call_logs sample (first 3):', (logsRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
-        call_id:    r.call_id     as string | undefined,
-        start_time: r.start_time  as string | undefined,
-        status:     r.call_status as string | undefined,
-      })));
-
-      // [X-Ray] Log the first 3 order rows to verify created_at and total_amount values (created_at과 total_amount 값을 확인하기 위해 order의 첫 3행을 로그에 출력)
-      console.log('[X-Ray] orders sample (first 3):', (ordersRes.data ?? []).slice(0, 3).map((r: Record<string, unknown>) => ({
-        created_at:   r.created_at   as string | undefined,
-        total_amount: r.total_amount as number | undefined,
-      })));
-
-      setLogs((logsRes.data     as CallLog[] | null) ?? []);
-      setOrders((ordersRes.data as Order[]   | null) ?? []);
-
-      // Surface errors — second error appended only when first is absent (오류 노출 — 두 번째 오류는 첫 번째가 없을 때만 추가)
-      if (logsRes.error)   setError(logsRes.error.message);
-      if (ordersRes.error) setError((p) => p ?? ordersRes.error!.message);
-
-    } catch (err) {
-      // Catch unexpected errors — surfaces the message in the error banner (예기치 않은 오류 처리 — 오류 배너에 메시지 표시)
-      console.error('[X-Ray] fetchData unexpected error:', err);
+    } catch (err: any) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      // Always clear loading state — guarantees the UI renders even on failure (항상 로딩 상태 초기화 — 실패 시에도 UI 렌더링을 보장)
       setLoading(false);
     }
-  // dateRange is a dep so changing the period fires a fresh server-side query (기간 변경이 새로운 서버 사이드 쿼리를 실행하도록 dateRange를 의존성으로 추가)
   }, [mode, id, dateRange, selectedStoreId, forceAggregation]);
 
   // Trigger fetchData whenever mode, id, or dateRange changes (mode, id, dateRange 변경 시 fetchData 실행)
