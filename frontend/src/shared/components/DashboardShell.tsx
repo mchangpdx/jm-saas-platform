@@ -97,9 +97,8 @@ const AGENCY_NAV: NavItem[] = [
     label: 'Security',
     icon:  ShieldAlert,
     children: [
-      { href: '/agency/security/pos-overlay',   label: 'POS Overlay',      icon: Monitor },
-      { href: '/agency/security/solink',         label: 'Solink Monitoring', icon: Monitor },
-      { href: '/agency/security/prevent-theft', label: 'Prevent Theft',    icon: Eye     },
+      { href: '/agency/security/solink',         label: 'POS Overlay Monitoring', icon: Monitor },
+      { href: '/agency/security/prevent-theft', label: 'Prevent Theft',           icon: Eye     },
     ],
   },
 ];
@@ -113,8 +112,11 @@ const AGENCY_NAV: NavItem[] = [
 //  Security는 마지막 내비 그룹 — 자주 사용하지 않는 기능을 일상 사용과 분리)
 const STORE_NAV: NavItem[] = [
   { href: '/store',              label: 'Overview',     icon: LayoutDashboard },
-  { href: '/store/ai-voice-bot', label: 'AI Voice Bot', icon: Mic             },
-  { href: '/store/reservations', label: 'Reservations', icon: CalendarCheck   },
+  { href: '/store/ai-voice-bot',  label: 'AI Voice Bot',  icon: Mic         },
+  // Call History — placed directly below AI Voice Bot as it is the primary output of voice calls
+  // (Call History를 AI Voice Bot 바로 아래에 배치 — 음성 통화의 주요 출력 결과이기 때문)
+  { href: '/store/call-history', label: 'Call History',  icon: History     },
+  { href: '/store/reservations', label: 'Reservations',  icon: CalendarCheck },
   { href: '/store/analytics',    label: 'Analytics',    icon: BarChart2       },
   // Settings above Security — part of main functional nav, not the logout footer area
   // (Settings를 Security 위에 배치 — 로그아웃 푸터 영역이 아닌 메인 기능 내비의 일부)
@@ -126,9 +128,8 @@ const STORE_NAV: NavItem[] = [
     label: 'Security',
     icon:  ShieldAlert,
     children: [
-      { href: '/store/security/pos-overlay',   label: 'POS Overlay',      icon: Monitor },
-      { href: '/store/security/solink',         label: 'Solink Monitoring', icon: Monitor },
-      { href: '/store/security/prevent-theft', label: 'Prevent Theft',    icon: Eye     },
+      { href: '/store/security/solink',         label: 'POS Overlay Monitoring', icon: Monitor },
+      { href: '/store/security/prevent-theft', label: 'Prevent Theft',           icon: Eye     },
     ],
   },
 ];
